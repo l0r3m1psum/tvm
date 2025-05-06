@@ -245,7 +245,9 @@ class UndefinedVarVerifier : public Verifier<UndefinedVarVerifier> {
     bool redefine_is_allowed = redefine_allowed_within_function_.count(var);
     {
       auto it = currently_defined_.find(var);
-      Verify(it == currently_defined_.end() || redefine_is_allowed)
+      bool test = it == currently_defined_.end() || redefine_is_allowed;
+      if (!test)
+        Verify(test)
           << "ValueError: "
           << "TIR is ill-formed, "
           << "due to multiple nested definitions of variable " << var
@@ -254,7 +256,9 @@ class UndefinedVarVerifier : public Verifier<UndefinedVarVerifier> {
 
     {
       auto it = previously_defined_.find(var);
-      Verify(it == previously_defined_.end() || redefine_is_allowed)
+      bool test = it == previously_defined_.end() || redefine_is_allowed;
+      if (!test)
+        Verify(test)
           << "ValueError: "
           << "TIR is ill-formed, "
           << "due to multiple definitions of variable " << var << ".  It was first defined at "
