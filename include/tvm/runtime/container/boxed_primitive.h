@@ -74,7 +74,7 @@ class BoxNode : public Object {
 
   static constexpr const char* _type_key = detail::BoxNodeRuntimeTraits<Prim>::_type_key;
   static constexpr bool _type_has_method_visit_attrs = false;
-  TVM_DECLARE_FINAL_OBJECT_INFO(BoxNode, Object);
+  TVM_DECLARE_FINAL_OBJECT_INFO(BoxNode<Prim>, Object);
 };
 
 template <typename Prim>
