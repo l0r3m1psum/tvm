@@ -689,9 +689,9 @@ struct ObjectPtrEqual {
     return _GetOrAllocRuntimeTypeIndex();                                                      \
   }                                                                                            \
   static uint32_t _GetOrAllocRuntimeTypeIndex() {                                              \
+    std::string type_key = TypeName::_type_key;                                                \
     uint32_t type_index = TypeName::_type_index;                                               \
     uint32_t runtime_type_index = ParentType::_GetOrAllocRuntimeTypeIndex();                   \
-    std::string type_key = std::string{TypeName::_type_key} + "";                              \
     uint32_t type_child_slots = TypeName::_type_child_slots;                                   \
     bool type_child_slots_can_overflow = TypeName::_type_child_slots_can_overflow;             \
     static uint32_t tindex = Object::GetOrAllocRuntimeTypeIndex(                               \

@@ -215,8 +215,10 @@ class TypeContext {
 uint32_t Object::GetOrAllocRuntimeTypeIndex(const std::string& key, uint32_t static_tindex,
                                             uint32_t parent_tindex, uint32_t num_child_slots,
                                             bool child_slots_can_overflow) {
-  return TypeContext::Global()->GetOrAllocRuntimeTypeIndex(
-      key, static_tindex, parent_tindex, num_child_slots, child_slots_can_overflow);
+  std::string key_copy = key;
+  TypeContext *type_context = TypeContext::Global();
+  return type_context->GetOrAllocRuntimeTypeIndex(
+      key_copy, static_tindex, parent_tindex, num_child_slots, child_slots_can_overflow);
 }
 
 bool Object::DerivedFrom(uint32_t parent_tindex) const {
