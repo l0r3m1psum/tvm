@@ -47,7 +47,7 @@ class DSOLibraryCache {
   std::mutex mutex_;
 };
 
-Module LoadVMModule(std::string path, Device device) {
+Module LoadVMModule(const std::string& path, Device device) {
   static DSOLibraryCache cache;
   Module dso_mod = cache.Open(path);
   device = UseDefaultDeviceIfNone(device);
@@ -64,6 +64,10 @@ Module LoadVMModule(std::string path, Device device) {
                     static_cast<int>(AllocatorType::kPooled), static_cast<int>(kDLCPU), 0,
                     static_cast<int>(AllocatorType::kPooled));
   return mod;
+}
+
+Module LoadVMModule(std::string path, Device device) {
+  return static_cast<Module (*)(const std::string&, Device)>(LoadVMModule)(path, device);
 }
 
 NDArray DiscoEmptyNDArray(ShapeTuple shape, DataType dtype, Device device) {
@@ -121,7 +125,7 @@ void SyncWorker() {
   }
 }
 
-TVM_REGISTER_GLOBAL("runtime.disco.load_vm_module").set_body_typed(LoadVMModule);
+TVM_REGISTER_GLOBAL("runtime.disco.load_vm_module").set_body_typed(static_cast<Module (*)(std::string, Device)>(LoadVMModule));
 
 TVM_REGISTER_GLOBAL("runtime.disco.empty")
     .set_body_typed([](ShapeTuple shape, DataType dtype, Device device, bool worker0_only,
