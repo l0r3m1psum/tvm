@@ -33,6 +33,28 @@
 #include <dmlc/thread_local.h>
 #include <tvm/runtime/c_runtime_api.h>
 
+// DMLC defines all this macros but we define them again later. This avoids
+// warnings from the compiler.
+#undef LOG
+#undef LOG_FATAL
+#undef LOG_INFO
+#undef LOG_ERROR
+#undef LOG_WARNING
+#undef CHECK
+#undef CHECK_LT
+#undef CHECK_GT
+#undef CHECK_LE
+#undef CHECK_GE
+#undef CHECK_EQ
+#undef CHECK_NE
+#undef CHECK_NOTNULL
+#undef LOG_IF
+#undef LOG_DFATAL
+#undef DFATAL
+#undef DLOG
+#undef DLOG_IF
+#undef VLOG
+
 #include <ctime>
 #include <iomanip>
 #include <iostream>
