@@ -878,6 +878,7 @@ inline int Object::use_count() const { return ref_counter_; }
 
 template <typename TargetType>
 inline bool Object::IsInstance() const {
+  uint32_t runtime_type_index = TargetType::RuntimeTypeIndex();
   const Object* self = this;
   // NOTE: the following code can be optimized by
   // compiler dead-code elimination for already known constants.
@@ -887,11 +888,11 @@ inline bool Object::IsInstance() const {
     if (TargetType::_type_final) {
       // if the target type is a final type
       // then we only need to check the equivalence.
-      return self->type_index_ == TargetType::RuntimeTypeIndex();
+      return self->type_index_ == runtime_type_index;
     } else {
       // if target type is a non-leaf type
       // Check if type index falls into the range of reserved slots.
-      uint32_t begin = TargetType::RuntimeTypeIndex();
+      uint32_t begin = runtime_type_index;
       // The condition will be optimized by constant-folding.
       if (TargetType::_type_child_slots != 0) {
         uint32_t end = begin + TargetType::_type_child_slots + 1;
@@ -901,9 +902,9 @@ inline bool Object::IsInstance() const {
       }
       if (!TargetType::_type_child_slots_can_overflow) return false;
       // Invariance: parent index is always smaller than the child.
-      if (self->type_index_ < TargetType::RuntimeTypeIndex()) return false;
+      if (self->type_index_ < begin) return false;
       // The rare slower-path, check type hierarchy.
-      return self->DerivedFrom(TargetType::RuntimeTypeIndex());
+      return self->DerivedFrom(begin);
     }
   } else {
     return false;
