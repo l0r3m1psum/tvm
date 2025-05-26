@@ -222,7 +222,9 @@ uint32_t Object::GetOrAllocRuntimeTypeIndex(const std::string& key, uint32_t sta
 }
 
 bool Object::DerivedFrom(uint32_t parent_tindex) const {
-  return TypeContext::Global()->DerivedFrom(this->type_index_, parent_tindex);
+  unsigned int type_index = this->type_index_;
+  TypeContext *type_context = TypeContext::Global();
+  return type_context->DerivedFrom(type_index, parent_tindex);
 }
 
 std::string Object::TypeIndex2Key(uint32_t tindex) {
