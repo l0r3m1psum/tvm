@@ -770,6 +770,10 @@ class LoopReconstructor : private StmtMutator {
         filtered.push_back(std::move(stmt));
       }
     }
+    // NOTE(Diego): this is a workaround for a TVM bug, if the `filtered ` list
+    // has size 1 the SeqStmt constructor raises an exception making the
+    // `if (ret->size() == 1)` below unreachable.
+    if (filtered.size() == 1) return filtered[0];
     ret = SeqStmt(filtered);
     if (ret->size() == 0) {
       return Evaluate(0);
