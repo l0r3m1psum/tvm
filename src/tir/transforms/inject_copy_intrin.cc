@@ -75,13 +75,13 @@ class CopyIntrinInjector : public StmtMutator {
     std::vector<const ForNode*> loops;
     while (const ForNode* op = body.as<ForNode>()) {
       if (!is_zero(op->min)) {
-        *error_info = "the 'min' value of body 'Fonode' is 0.";
+        *error_info = "the 'min' value of body 'ForNode' is not 0.";
         return false;
       }
       loops.push_back(op);
       body = op->body;
     }
-    auto store = body.as<BufferStoreNode>();
+    const BufferStoreNode* store = body.as<BufferStoreNode>();
     if (store == nullptr) {
       *error_info = "the body is not a 'BufferStoreNode'";
       return false;
@@ -93,7 +93,7 @@ class CopyIntrinInjector : public StmtMutator {
                     select(sel_cond, sel_true_value, sel_false_value).Match(store->value);
 
     const CastNode* cast = store->value.as<CastNode>();
-    auto load = store->value.as<BufferLoadNode>();
+    const BufferLoadNode* load = store->value.as<BufferLoadNode>();
     if (0 == loops.size()) {
       ICHECK(!has_cond);
     }
