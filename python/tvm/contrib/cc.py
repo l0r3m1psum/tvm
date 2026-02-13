@@ -123,6 +123,32 @@ def _linux_ar(output, inputs, ar):
 
     shutil.move(temp_output, output)
 
+def _windows_lib(output, inputs, lib_cmd):
+    lib_cmd = lib_cmd or "lib.exe"
+
+    libname = os.path.basename(output)
+
+    temp = _utils.tempdir()
+    temp_output = temp.relpath(libname)
+
+    cmd = [lib_cmd, "/OUT:" + temp_output]
+
+    # We reuse the same tar unpacking logic used in the Linux version
+    objects = _tar.normalize_file_list_by_unpacking_tars(temp, inputs)
+
+    cmd += objects
+    print(cmd)
+
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    (out, _) = proc.communicate()
+
+    if proc.returncode != 0:
+        msg = "LIB error:\n"
+        msg += py_str(out)
+        msg += "\nCommand line: " + " ".join(cmd)
+        raise RuntimeError(msg)
+
+    shutil.move(temp_output, output)
 
 def create_staticlib(output, inputs, ar=None):
     """Create static library.
@@ -142,6 +168,8 @@ def create_staticlib(output, inputs, ar=None):
 
     if _is_linux_like():
         return _linux_ar(output, inputs, ar)
+    elif _is_windows_like():
+        return _windows_lib(output, inputs, ar)
     else:
         raise ValueError("Unsupported platform")
 
