@@ -722,7 +722,11 @@ endif()
 
 # Change relative paths in backtrace to absolute ones
 if(TVM_IS_DEBUG_BUILD)
-  set(FILE_PREFIX_MAP_FLAG "-ffile-prefix-map=..=${CMAKE_CURRENT_SOURCE_DIR}")
+  if(MSVC)
+    set(FILE_PREFIX_MAP_FLAG "/pathmap:..=${CMAKE_CURRENT_SOURCE_DIR}")
+  else()
+    set(FILE_PREFIX_MAP_FLAG "-ffile-prefix-map=..=${CMAKE_CURRENT_SOURCE_DIR}")
+  endif()
   target_compile_options(tvm_compiler PRIVATE "${FILE_PREFIX_MAP_FLAG}")
   CHECK_CXX_COMPILER_FLAG("${FILE_PREFIX_MAP_FLAG}" FILE_PREFIX_MAP_SUPPORTED)
   if(FILE_PREFIX_MAP_SUPPORTED)

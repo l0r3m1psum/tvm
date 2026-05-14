@@ -304,7 +304,7 @@ class VLogContext {
     }
   }
 
-  std::string str() const;
+  TVM_DLL std::string str() const;
 
  private:
   std::vector<std::stringstream*> context_stack_;
