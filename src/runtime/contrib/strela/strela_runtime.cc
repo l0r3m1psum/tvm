@@ -19,6 +19,8 @@
 #include "../json/json_node.h"
 #include "../json/json_runtime.h"
 
+#include "strela.h"
+
 namespace tvm {
 namespace runtime {
 namespace contrib {
