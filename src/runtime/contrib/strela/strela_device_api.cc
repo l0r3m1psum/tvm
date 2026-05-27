@@ -1,8 +1,11 @@
 #include <tvm/runtime/device_api.h>
 #include <tvm/runtime/logging.h>
+#include <tvm/runtime/tensor.h>
 #include <tvm/ffi/reflection/registry.h>
 #include <tvm/ffi/function.h>
 #include "../../workspace_pool.h"
+
+#include <dlpack/dlpack.h>
 
 #include <cstdlib>
 #include <cstring>
@@ -27,7 +30,7 @@
     }
 
     if (posix_memalign(&ptr, new_alignment, size) != 0) {
-      ptr = NULL;
+      ptr = NULL; // This should not be necessary but we do it just in case.
     }
     return ptr;
   }
@@ -131,11 +134,37 @@ void MyDeviceAPI::FreeWorkspace(Device dev, void* data) {
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
-  refl::GlobalDef().def_packed(
+  refl::GlobalDef()
+  .def_packed(
     "device_api.ext_dev",
     [](ffi::PackedArgs args, ffi::Any* rv) {
       DeviceAPI* ptr = MyDeviceAPI::Global();
       *rv = static_cast<void*>(ptr);
+    }
+  )
+  .def(
+    "ext_dev.zero_copy_cpu_view",
+    [](Tensor ext_array) -> Tensor {
+      // NOTE: LLM generated, not user if this works correctly.
+
+      // 1. Copy the DLTensor struct from the accelerator array
+      DLTensor cpu_tensor = *ext_array.operator->();
+
+      // 2. Spoof the device type so LLVM TIR kernels allow it
+      cpu_tensor.device = Device{kDLCPU, 0};
+
+      // 3. Wrap it in a DLManagedTensor to handle lifecycle safely
+      DLManagedTensor* managed = new DLManagedTensor();
+      managed->dl_tensor = cpu_tensor;
+      managed->manager_ctx = new Tensor(ext_array); // Keep original array alive
+
+      managed->deleter = [](DLManagedTensor* self) {
+        // Drop the ref-count to the original array when the view dies
+        delete static_cast<Tensor*>(self->manager_ctx);
+        delete self;
+      };
+
+      return Tensor::FromDLPack(managed);
     }
   );
 }
@@ -147,6 +176,7 @@ extern "C" {
 TVM_DLL void my_func(double *x, double *y, size_t len);
 
 void my_func(double *x, double *y, size_t len) {
+  PRINT;
   for (size_t i = 0; i < len; i++) {
     y[i] = x[i] + 1;
   }
