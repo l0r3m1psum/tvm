@@ -112,6 +112,10 @@ class MyDeviceAPI final : public DeviceAPI {
 
 class MyThreadEntry {
  public:
+  // The TVM runtime should use the WorkspacePool to allocate auxiliary data
+  // needed by the given layer (everything that is not input and output buffers)
+  // e.g. when performing im2col the "unrolled" input image. Give the algorithms
+  // implementable in STRELA this should not be needed.
   WorkspacePool pool;
 
   MyThreadEntry() : pool(kDLExtDev, MyDeviceAPI::Global()) {}

@@ -21,6 +21,28 @@
 
 #include "strela.h"
 
+static const uint32_t relu_kernel[STRELA_KERNEL_SIZE] = {
+  0x00000021, 0x00000000, 0x00000000, 0x00000000, 0x00000000, // 12
+  0x00000021, 0x00000000, 0x00000000, 0x00000000, 0x00000000, // 8
+  0x00004083, 0x20CC0300, 0x000000A0, 0x00000000, 0x00000000, // 4
+  0x00000241, 0x020C0300, 0x00000099, 0x00000000, 0x00000000, // 0
+
+  0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, // 13
+  0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, // 9
+  0x00000011, 0x00000000, 0x00000000, 0x00000000, 0x00000000, // 5
+  0x00400008, 0x00000200, 0x00000000, 0x00000000, 0x00000000, // 1
+
+  0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, // 14
+  0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, // 10
+  0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, // 6
+  0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, // 2
+
+  0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, // 15
+  0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, // 11
+  0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, // 7
+  0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, // 3
+};
+
 namespace tvm {
 namespace runtime {
 namespace contrib {
@@ -46,6 +68,13 @@ class STRELARuntime : public JSONRuntimeBase {
 
     LOG(INFO) << "Initialization";
 
+    unsigned which = 0;
+    dev = strela_dev_init(which);
+    if (!strela_dev_ok(dev)) {
+      LOG(FATAL) << "Unable to initialized STRELA device " << which
+        << " because " << strela_dev_get_err(dev).errnum;
+    }
+
     AnalyzeGraphForOptimization();
   }
 
@@ -68,17 +97,45 @@ class STRELARuntime : public JSONRuntimeBase {
           const DLTensor *input = data_entry_[input_id];
           const DLTensor *output = data_entry_[output_id];
 
+          DLDataType int32_dtype = {kDLInt, 32, 1};
+          if (input->dtype != int32_dtype || output->dtype != int32_dtype) {
+            LOG(FATAL) << "ReLU on STRELA works only in int32.";
+          }
+
           int64_t num_elements = 1;
           for (int dim = 0; dim < input->ndim; ++dim) {
             num_elements *= input->shape[dim];
           }
 
-          const float* input_data = static_cast<const float *>(input->data);
-          float* out_data = static_cast<float *>(output->data);
+          const int32_t *input_data = static_cast<const int32_t *>(input->data);
+          int32_t *output_data = static_cast<int32_t *>(output->data);
 
-          for (int64_t i = 0; i < num_elements; ++i) {
-            out_data[i] = 23.f; // std::max(0.0f, input_data[i]);
+          // TODO: assert that the tensors are contiguous (i.e. no strides)
+
+          strela_kernel kernel = strela_kernel_alloc(dev);
+          strela_kernel_set(dev, kernel, relu_kernel);
+          strela_buffer input_buf = strela_buffer_alloc(dev, num_elements);
+          strela_buffer output_buf = strela_buffer_alloc(dev, num_elements);
+          strela_buffer_set(dev, input_buf, input_data);
+
+          strela_conf conf = {
+            .inp0_offset = input_buf.offset_words_from_base, .inp0_count = num_elements, .inp0_stride = sizeof (strela_word),
+            .out0_offset = output_buf.offset_words_from_base, .out0_count = num_elements,
+          };
+
+          strela_config(dev, kernel, &conf);
+          strela_execute(dev);
+          strela_buffer_get(dev, output_buf, output_data);
+          strela_buffer_free_all(dev);
+          strela_kernel_free_all(dev);
+
+          if (!strela_dev_ok(dev)) {
+            LOG(FATAL) << "Unable to run ReLU on STRELA because " << strela_dev_get_err(dev).errnum;
           }
+
+          // for (int64_t i = 0; i < num_elements; ++i) {
+          //   output_data[i] = 23.f; // std::max(0.0f, input_data[i]);
+          // }
         }
       }
     }
@@ -87,6 +144,7 @@ class STRELARuntime : public JSONRuntimeBase {
   }
 
  private:
+  strela_dev *dev;
 
   void AnalyzeGraphForOptimization() {
     for (const JSONGraphNode& node : nodes_) {

@@ -16,11 +16,17 @@ if(USE_STRELA_RUNTIME)
 
     tvm_file_glob(GLOB RUNTIME_STRELA_SRCS src/runtime/contrib/strela/*.cc)
     list(APPEND RUNTIME_SRCS ${RUNTIME_STRELA_SRCS})
+    list(APPEND TVM_RUNTIME_LINKER_LIBS strela)
 
     if(NOT DEFINED STRELA_INCLUDE_DIR)
         message(FATAL_ERROR "STRELA_INCLUDE_DIR is not defined. Please provide the path to the STRELA headers.")
     endif()
 
+    if(NOT DEFINED STRELA_LIB_DIR)
+        message(FATAL_ERROR "STRELA_LIB_DIR is not defined. Please provide the path to the STRELA library directory.")
+    endif()
+
     add_definitions(-DTVM_GRAPH_EXECUTOR_STRELA)
-    add_compile_options(-I ${STRELA_INCLUDE_DIR})
+    include_directories(${STRELA_INCLUDE_DIR})
+    link_directories(${STRELA_LIB_DIR})
 endif()
