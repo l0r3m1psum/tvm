@@ -119,7 +119,7 @@ class STRELARuntime : public JSONRuntimeBase {
           strela_buffer_set(dev, input_buf, input_data);
 
           strela_conf conf = {
-            .inp0_offset = input_buf.offset_words_from_base, .inp0_count = num_elements, .inp0_stride = sizeof (strela_word),
+            .inp0_offset = input_buf.offset_words_from_base, .inp0_count = num_elements, .inp0_stride = 1,
             .out0_offset = output_buf.offset_words_from_base, .out0_count = num_elements,
           };
 
