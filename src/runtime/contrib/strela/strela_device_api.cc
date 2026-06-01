@@ -11,7 +11,9 @@
 #include <cstring>
 #include <iostream>
 
-#define PRINT do { std::cout << __func__ << '\n'; } while (0)
+#include "strela.h"
+
+#define PRINT do { LOG(INFO) << __func__; } while (0)
 
 #if defined(_WIN32) || defined(__CYGWIN__)
   #include <malloc.h>
@@ -41,28 +43,68 @@
   }
 #endif
 
+// https://stackoverflow.com/questions/2745074/fast-ceiling-of-an-integer-division-in-c-c#comment73511086_2745086
+static size_t
+ceil_div(size_t x, size_t y) {
+  return x == 0 ? 0 : 1 + ((x - 1) / y);
+}
+
 namespace tvm {
 namespace runtime {
 
 class MyDeviceAPI final : public DeviceAPI {
  public:
-  void SetDevice(Device dev) final { PRINT; }
+  void SetDevice(Device dev) final {
+    PRINT;
+    // cudaSetDevice
+    this->dev = strela_dev_init(dev.device_id);
+    if (!strela_dev_ok(this->dev)) {
+      LOG(FATAL) << "Unable to set device " << dev.device_id << " because "
+      << strela_dev_get_err(this->dev).errnum;
+    }
+  }
 
   void GetAttr(Device dev, DeviceAttrKind kind, ffi::Any* rv) final {
     PRINT;
-    if (kind == kExist) {
-      *rv = 1;
+    int value = 0;
+    switch (kind) {
+      case kExist: {
+        // cudaGetDeviceCount
+        unsigned count = 0;
+        int err = strela_device_count(&count);
+        if (err == -1) {
+          LOG(WARNING) << "The STRELA device count is incomplete!";
+        }
+        value = err != -1 && dev.device_id < static_cast<int>(count);
+      }
     }
+    *rv = value;
   }
 
   void *AllocDataSpace(Device dev, size_t size, size_t alignment, DLDataType type_hint) final {
     PRINT;
-    return _aligned_malloc(size, alignment);
+    // cudaMalloc
+    if (type_hint != DLDataType{kDLInt, 32, 1}) {
+      LOG(FATAL) << "STRELA can only allocate int32 but a " << type_hint
+        << " was given.";
+    }
+    if (alignment % sizeof (strela_word) != 0) {
+      LOG(FATAL) << "STRELA can only allocate 4 bytes aligned data but "
+        << alignment << " was requested.";
+    }
+    this->dev = strela_dev_init(dev.device_id);
+    size_t size_word = ceil_div(size, sizeof (strela_word));
+    strela_buffer buf = strela_buffer_alloc(this->dev, size_word);
+    if (!buf.valid) {
+      LOG(FATAL) << "Unable to allocate " << size << " bytes on STRELA";
+    }
+    return strela_buffer_to_ptr(this->dev, buf);
   }
 
-  void FreeDataSpace(Device dev, void* ptr) final {
+  void FreeDataSpace(Device dev, void *ptr) final {
     PRINT;
-    _aligned_free(ptr);
+    // strela_buffer_free(dev, strela_buffer_from_ptr(dev, ptr));
+    // deallocation can fail only if a bad pointer has been passed.
   }
 
 #if 0
@@ -103,11 +145,25 @@ class MyDeviceAPI final : public DeviceAPI {
   bool SupportsDevicePointerArithmeticsOnHost() final { return true; }
 #endif
 
+  strela_dev *dev;
+
   static MyDeviceAPI *Global() {
     PRINT;
     static auto *inst = new MyDeviceAPI();
+
+    ffi::Any rv;
+    inst->GetAttr(Device{kDLExtDev, 0}, kExist, &rv);
+
+    int exists = rv.cast<int>();
+    if (exists) {
+      inst->dev = strela_dev_init(0);
+    } else {
+      LOG(FATAL) << "Cannot initialize MyDeviceAPI: STRELA device 0 does not exist.";
+    }
+
     return inst;
   }
+
 };
 
 class MyThreadEntry {
