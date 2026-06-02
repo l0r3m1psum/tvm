@@ -84,10 +84,12 @@ class MyDeviceAPI final : public DeviceAPI {
   void *AllocDataSpace(Device dev, size_t size, size_t alignment, DLDataType type_hint) final {
     PRINT;
     // cudaMalloc
+#if 0
     if (type_hint != DLDataType{kDLInt, 32, 1}) {
       LOG(FATAL) << "STRELA can only allocate int32 but a " << type_hint
         << " was given.";
     }
+#endif
     if (alignment % sizeof (strela_word) != 0) {
       LOG(FATAL) << "STRELA can only allocate 4 bytes aligned data but "
         << alignment << " was requested.";
@@ -103,8 +105,7 @@ class MyDeviceAPI final : public DeviceAPI {
 
   void FreeDataSpace(Device dev, void *ptr) final {
     PRINT;
-    // strela_buffer_free(dev, strela_buffer_from_ptr(dev, ptr));
-    // deallocation can fail only if a bad pointer has been passed.
+    strela_buffer_free(this->dev, strela_buffer_from_ptr(this->dev, ptr));
   }
 
 #if 0

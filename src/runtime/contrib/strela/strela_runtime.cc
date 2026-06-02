@@ -102,6 +102,19 @@ class STRELARuntime : public JSONRuntimeBase {
             LOG(FATAL) << "ReLU on STRELA works only in int32.";
           }
 
+          if (
+            input->device.device_type != kDLExtDev
+            || output->device.device_type != kDLExtDev
+          ) {
+            LOG(FATAL) << "To allow for zero copy both tensor must be allocated"
+              << " on an ext_dev";
+          }
+
+          if (input->device.device_id != output->device.device_id) {
+            LOG(FATAL) << "For the moment the STRELA driver does not support "
+              << "moving data between different STRELAs.";
+          }
+
           int64_t num_elements = 1;
           for (int dim = 0; dim < input->ndim; ++dim) {
             num_elements *= input->shape[dim];
@@ -114,9 +127,8 @@ class STRELARuntime : public JSONRuntimeBase {
 
           strela_kernel kernel = strela_kernel_alloc(dev);
           strela_kernel_set(dev, kernel, relu_kernel);
-          strela_buffer input_buf = strela_buffer_alloc(dev, num_elements);
-          strela_buffer output_buf = strela_buffer_alloc(dev, num_elements);
-          strela_buffer_set(dev, input_buf, input_data);
+          strela_buffer input_buf = strela_buffer_from_ptr(dev, input_data);
+          strela_buffer output_buf = strela_buffer_from_ptr(dev, output_data);
 
           strela_conf conf = {
             .inp0_offset = input_buf.offset_words_from_base, .inp0_count = num_elements, .inp0_stride = 1,
@@ -125,17 +137,10 @@ class STRELARuntime : public JSONRuntimeBase {
 
           strela_config(dev, kernel, &conf);
           strela_execute(dev);
-          strela_buffer_get(dev, output_buf, output_data);
-          strela_buffer_free_all(dev);
-          strela_kernel_free_all(dev);
 
           if (!strela_dev_ok(dev)) {
             LOG(FATAL) << "Unable to run ReLU on STRELA because " << strela_dev_get_err(dev).errnum;
           }
-
-          // for (int64_t i = 0; i < num_elements; ++i) {
-          //   output_data[i] = 23.f; // std::max(0.0f, input_data[i]);
-          // }
         }
       }
     }
