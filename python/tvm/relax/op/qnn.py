@@ -323,7 +323,7 @@ def infer_struct_info_qnn_avg_pool2d_op(call: relax.Call, ctx: relax.block_build
         attrs = avg_pool2d_attrs_to_dict(call.attrs)
         del attrs["qaxis"]
         dummy_pool = relax.op.nn.avg_pool2d(dummy_x, **attrs)
-        normalized = ctx.normalize(dummy_conv)
+        normalized = ctx.normalize(dummy_pool)
         out_shape = normalized.struct_info.shape
 
     out_dtype = x_sinfo.dtype
@@ -375,7 +375,7 @@ def avg_pool2d(
 # NOTE: this is the only operator for now that supports dynamic quantization...
 # TODO: type check qaxis
 def infer_struct_info_qnn_linear_op(call: relax.Call, ctx: relax.block_builder.BlockBuilder) -> relax.struct_info.StructInfo:
-    if len(call.args) not in (8, 9):
+    if len(call.args) not in (9, 10):
         raise ValueError("relax.qnn.linear expects either 8 or 9 arguments.")
 
     sinfo = get_tensors_sinfo(call.args)
