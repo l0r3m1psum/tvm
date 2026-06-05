@@ -9,16 +9,18 @@ The aim of this operators is to support legalizing this operations to implement:
   * simulated quantization
 All of this can be done by having inputs and zero points in integer formats.
 
-Per-axis quantization is supported via the qaxis argument (if scale and zero
-point are scalars this argument is ignored i.e. we are going per-tensor
-quantization). Broadcasting scale to zero point and vice versa can be
-supported. Using, for example, per-tensor quantization on the input and per-axis
-quantization on the weight could be supported via a list of axis arguments.
+Per-axis and per-block quantization is supported via the shape of the
+quantization parameters e.g. if the shape of the quantized data is (M,) and we
+want to have M/N quantization blocks than the quantization parameter will have
+the same shape (M/N,) assuming that M%N = 0.
+
+Broadcasting scale to zero point and vice versa can be supported.
 
 Until now we have tacitly assumed all scales and zero points to be compile time
-constants to ease legalization of this operators. To support:
+constants to ease legalization of this operators by allowing to fuse the scales
+and simplify away null zero points. To support:
   * dynamic quantization
-it is required to relax this required for the input quantization parameters.
+it is necessary to relax this requirement for the input quantization parameters.
 
 Future work involve supporting inputs and zero point in floating point formats
 to allow for:
@@ -26,7 +28,12 @@ to allow for:
     zero point to null)
   * fake quantization
 
+Other approaches include the MLIR quant dialect [1]. It has support for
+per-block quantization but it cannot support dynamic quantization being a at
+type level.
+
 [0]: https://onnx.ai/onnx/operators/onnx__QLinearConv.html#outputs
+[1]: https://mlir.llvm.org/docs/Dialects/QuantDialect
 """
 
 # NOTE: to do shape inference we use relax.BlockBuilder.normalize. This has the
@@ -36,12 +43,14 @@ to allow for:
 # times if the expression in not in ANF (A normal form) because
 # relax.BlockBuilder.normalize emits a spurious operation in the Relax function.
 
-from tvm import ir, relax
+# TODO: all tensors should have the same vdevice
+
+from tvm import ir, relax, tirx
 
 from typing import Optional, Tuple, Union
 
-def is_int(dtype): return dtype.startswith("int") or dtype.startswith("uint")
-def is_float(dtype): return dtype.startswith("float")
+def is_int(dtype: str) -> bool: return dtype.startswith("int") or dtype.startswith("uint")
+def is_float(dtype: str) -> bool: return dtype.startswith("float")
 def get_tensors_sinfo(args):
     sinfo = []
     for i, arg in enumerate(args):
@@ -50,7 +59,46 @@ def get_tensors_sinfo(args):
         sinfo.append(arg.struct_info)
     return sinfo
 
-# TODO: type check qaxis
+def same_shape(s: relax.struct_info.TensorStructInfo, zp: relax.struct_info.TensorStructInfo) -> bool:
+    return s.ndim == zp.ndim and (
+        s.shape is None and zp.shape is None
+        or s.shape.values == zp.shape.values
+    )
+
+def check_divisible(
+    data: relax.struct_info.TensorStructInfo,
+    qparam: relax.struct_info.TensorStructInfo
+) -> bool:
+    # if isinstance(data, relax.ShapeExpr): breakpoint()
+    qparam_scalar = isinstance(qparam.shape, relax.ShapeExpr) and not qparam.shape.values
+    if qparam_scalar:
+        return True
+
+    if data.ndim == -1 or qparam.ndim == -1:
+        return True
+
+    if data.ndim != qparam.ndim:
+        return False
+
+    if not isinstance(data.shape, relax.ShapeExpr) or not isinstance(qparam.shape, relax.ShapeExpr):
+        return True
+
+    for data_dim, qparam_dim in zip(data.shape.values, qparam.shape.values):
+        if isinstance(data_dim, tirx.IntImm) and isinstance(qparam_dim, tirx.IntImm):
+            q_val = int(qparam_dim)
+
+            if int(data_dim) % q_val != 0:
+                return False
+
+        # If either is symbolic (tir.Var), we trust it and continue. We could
+        # try something like this
+        # cond = tir.truncmod(data_dim, qparam_dim) == 0
+        # analyzer.can_prove(cond)
+        # or introduce something like
+        # builder.emit(relax.op.assert_op(cond))
+
+    return True
+
 def infer_struct_info_qnn_add_op(call: relax.Call, ctx: relax.block_builder.BlockBuilder) -> relax.struct_info.StructInfo:
     if len(call.args) != 8:
         raise ValueError("relax.qnn.add expects exactly 8 arguments.")
@@ -79,7 +127,12 @@ def infer_struct_info_qnn_add_op(call: relax.Call, ctx: relax.block_builder.Bloc
             is_int(c_zp_sinfo.dtype)):
         raise ValueError("All zero points must be integer tensors.")
 
-    def get_broadcast_shape(shape1, shape2):
+    if not (same_shape(a_scale_sinfo, a_zp_sinfo) and
+            same_shape(b_scale_sinfo, b_zp_sinfo) and
+            same_shape(c_scale_sinfo, c_zp_sinfo)):
+        raise ValueError("Scales and zero points pairs should have the same shape")
+
+    def get_broadcast_shape(shape1: relax.expr.ShapeExpr, shape2: relax.expr.ShapeExpr) -> relax.TensorStructInfo:
        if shape1 is None or shape2 is None:
            return None
 
@@ -91,22 +144,41 @@ def infer_struct_info_qnn_add_op(call: relax.Call, ctx: relax.block_builder.Bloc
 
        normalized = ctx.normalize(dummy_add)
 
-       return normalized.struct_info.shape
+       return normalized.struct_info
+
+    # We avoid checking the quantization parameters because we would have to
+    # broadcast them to the correct dimension and their dimension check is done
+    # later in check_divisible.
 
     # (a_scale * (a - a_zero_point) + b_scale * (b - b_zero_point))/c_scale + c_zero_point
-    out_shape1 = get_broadcast_shape(a_sinfo.shape, a_zp_sinfo.shape)
-    out_shape1 = get_broadcast_shape(out_shape1, a_scale_sinfo.shape)
-    out_shape2 = get_broadcast_shape(b_sinfo.shape, b_zp_sinfo.shape)
-    out_shape2 = get_broadcast_shape(out_shape2, b_scale_sinfo.shape)
-    out_shape = get_broadcast_shape(out_shape1, out_shape2)
-    out_shape = get_broadcast_shape(out_shape, c_scale_sinfo.shape)
-    out_shape = get_broadcast_shape(out_shape, c_zp_sinfo.shape)
+    out_sinfo1 = a_sinfo
+    # out_sinfo1 = get_broadcast_shape(a_sinfo.shape, a_zp_sinfo.shape)
+    # out_sinfo1 = get_broadcast_shape(out_sinfo1.shape, a_scale_sinfo.shape) if out_sinfo1 is not None else None
+    out_sinfo2 = b_sinfo
+    # out_sinfo2 = get_broadcast_shape(b_sinfo.shape, b_zp_sinfo.shape)
+    # out_sinfo2 = get_broadcast_shape(out_sinfo2.shape, b_scale_sinfo.shape) if out_sinfo2 is not None else None
+    out_sinfo = get_broadcast_shape(out_sinfo1.shape, out_sinfo2.shape)  if out_sinfo1 is not None and out_sinfo2 is not None else None
+    # out_sinfo = get_broadcast_shape(out_sinfo.shape, c_scale_sinfo.shape) if out_sinfo is not None else None
+    # out_sinfo = get_broadcast_shape(out_sinfo.shape, c_zp_sinfo.shape) if out_sinfo is not None else None
+    out_shape = out_sinfo.shape if out_sinfo is not None else None
+
+    if not (check_divisible(a_sinfo, a_zp_sinfo) and
+            check_divisible(b_sinfo, b_zp_sinfo) and
+            check_divisible(out_sinfo, c_zp_sinfo) if out_sinfo is not None else True):
+        raise ValueError("All dimensions of the quantization parameters should "
+            "divide the ones of the respective quantized tensor.")
 
     out_dtype = a_sinfo.dtype
     out_vdevice = a_sinfo.vdevice
-    out_ndim = max(s.ndim for s in sinfo) \
-        if out_shape is None and all(s.ndim >= 0 for s in sinfo) \
-        else -1
+    # Here we use the primary addends since the output should only depend on
+    # their rank i.e. a has ndim=4 while a_zp has ndim=-1 make the whole
+    # expression have ndim=-1
+    out_ndim = max(a_sinfo.ndim, b_sinfo.ndim) \
+            if out_shape is None and a_sinfo.ndim >= 0 and b_sinfo.ndim >= 0 \
+            else -1
+    # out_ndim = max(s.ndim for s in sinfo) \
+    #     if out_shape is None and all(s.ndim >= 0 for s in sinfo) \
+    #     else -1
 
     return relax.TensorStructInfo(out_shape, out_dtype, out_vdevice, out_ndim)
 
@@ -127,15 +199,10 @@ def add(
     a: relax.Expr, s_a: relax.Expr, z_a: relax.Expr,
     b: relax.Expr, s_b: relax.Expr, z_b: relax.Expr,
     s_c: relax.Expr, z_c: relax.Expr,
-    qaxis: int = -1,
 ) -> relax.Call:
     op = ir.Op.get("relax.qnn.add")
     args = (a, s_a, z_a, b, s_b, z_b, s_c, z_c)
-    attrs = ir.make_node(
-        "ir.DictAttrs",
-        qaxis=qaxis,
-    )
-    return relax.Call(op, args, attrs)
+    return relax.Call(op, args)
 
 def conv2d_attrs_to_dict(attrs: ir.DictAttrs) -> dict:
     strides = [int(s) for s in attrs["strides"]]
@@ -146,7 +213,6 @@ def conv2d_attrs_to_dict(attrs: ir.DictAttrs) -> dict:
     kernel_layout = str(attrs["kernel_layout"])
     out_layout = attrs["out_layout"]
     out_layout = str(out_layout) if out_layout else data_layout
-    qaxis = attrs["qaxis"]
     out_dtype = "void"
     res = {
         "strides": strides,
@@ -156,12 +222,10 @@ def conv2d_attrs_to_dict(attrs: ir.DictAttrs) -> dict:
         "data_layout": data_layout,
         "kernel_layout": kernel_layout,
         "out_layout": out_layout,
-        "qaxis": qaxis,
         "out_dtype": out_dtype,
     }
     return res
 
-# TODO: type check qaxis
 def infer_struct_info_qnn_conv2d_op(call: relax.Call, ctx: relax.block_builder.BlockBuilder) -> relax.struct_info.StructInfo:
     if len(call.args) not in (8, 9):
         raise ValueError("relax.qnn.conv2d expects either 8 or 9 arguments.")
@@ -194,13 +258,17 @@ def infer_struct_info_qnn_conv2d_op(call: relax.Call, ctx: relax.block_builder.B
             is_int(y_zp_sinfo.dtype)):
         raise ValueError("All zero points must be integer tensors.")
 
+    if not (same_shape(x_scale_sinfo, x_zp_sinfo) and
+            same_shape(w_scale_sinfo, w_zp_sinfo) and
+            same_shape(y_scale_sinfo, y_zp_sinfo)):
+        raise ValueError("Scales and zero points pairs should have the same shape")
+
     out_shape = None
     if x_sinfo.shape is not None and w_sinfo.shape is not None:
         dummy_x = relax.Var("tmp_x", relax.TensorStructInfo(x_sinfo.shape, dtype="float32"))
         dummy_w = relax.Var("tmp_w", relax.TensorStructInfo(w_sinfo.shape, dtype="float32"))
 
         attrs = conv2d_attrs_to_dict(call.attrs)
-        del attrs["qaxis"]
         dummy_conv = relax.op.nn.conv2d(dummy_x, dummy_w, **attrs)
         normalized = ctx.normalize(dummy_conv)
 
@@ -211,6 +279,12 @@ def infer_struct_info_qnn_conv2d_op(call: relax.Call, ctx: relax.block_builder.B
             normalized = ctx.normalize(dummy_add)
 
         out_shape = normalized.struct_info.shape
+
+    if not (check_divisible(x_sinfo, x_zp_sinfo) and
+            check_divisible(w_sinfo, w_zp_sinfo) and
+            check_divisible(out_shape, y_zp_sinfo) if out_shape is not None else True):
+        raise ValueError("All dimensions of the quantization parameters should "
+            "divide the ones of the respective quantized tensor.")
 
     out_dtype = y_zp_sinfo.dtype
     out_vdevice = x_sinfo.vdevice
@@ -245,7 +319,6 @@ def conv2d(
     data_layout: str = "NCHW",
     kernel_layout: str = "OIHW",
     out_layout: str | None = None,
-    qaxis: int = -1,
 ) -> relax.Call:
 
     op = ir.Op.get("relax.qnn.conv2d")
@@ -262,7 +335,6 @@ def conv2d(
         data_layout=data_layout,
         kernel_layout=kernel_layout,
         out_layout=out_layout,
-        qaxis=qaxis,
     )
 
     return relax.Call(op, args, attrs)
@@ -277,7 +349,6 @@ def avg_pool2d_attrs_to_dict(attrs: ir.DictAttrs) -> dict:
     layout = str(attrs["layout"])
     out_layout = attrs["out_layout"]
     out_layout = str(out_layout) if out_layout else layout
-    qaxis = attrs["qaxis"]
     res = {
         "pool_size": pool_size,
         "strides": strides,
@@ -287,11 +358,9 @@ def avg_pool2d_attrs_to_dict(attrs: ir.DictAttrs) -> dict:
         "count_include_pad": count_include_pad,
         "layout": layout,
         "out_layout": out_layout,
-        "qaxis": qaxis,
     }
     return res
 
-# TODO: type check qaxis
 def infer_struct_info_qnn_avg_pool2d_op(call: relax.Call, ctx: relax.block_builder.BlockBuilder) -> relax.struct_info.StructInfo:
     if len(call.args) != 5:
         raise ValueError("relax.qnn.avg_pool2d expects 5 arguments.")
@@ -315,16 +384,25 @@ def infer_struct_info_qnn_avg_pool2d_op(call: relax.Call, ctx: relax.block_build
             is_int(y_zp_sinfo.dtype)):
         raise ValueError("All zero points must be integer tensors.")
 
+    if not (same_shape(x_scale_sinfo, x_zp_sinfo) and
+            same_shape(y_scale_sinfo, y_zp_sinfo)):
+        raise ValueError("Scales and zero points pairs should have the same shape")
+
     out_shape = None
     if x_sinfo.shape is not None:
         dummy_x_sinfo = relax.TensorStructInfo(x_sinfo.shape, dtype="float32")
         dummy_x = relax.Var("tmp_x", dummy_x_sinfo)
 
         attrs = avg_pool2d_attrs_to_dict(call.attrs)
-        del attrs["qaxis"]
         dummy_pool = relax.op.nn.avg_pool2d(dummy_x, **attrs)
         normalized = ctx.normalize(dummy_pool)
         out_shape = normalized.struct_info.shape
+
+    if not (check_divisible(x_sinfo, x_zp_sinfo) and
+            check_divisible(out_shape, y_zp_sinfo) if out_shape is not None else True):
+        # breakpoint()
+        raise ValueError("All dimensions of the quantization parameters should "
+            "divide the ones of the respective quantized tensor.")
 
     out_dtype = x_sinfo.dtype
     out_vdevice = x_sinfo.vdevice
@@ -354,7 +432,6 @@ def avg_pool2d(
     count_include_pad: bool = False,
     layout: str = 'NCHW',
     out_layout: str | None = None,
-    qaxis: int = -1,
 ) -> relax.Call:
     op = ir.Op.get("relax.qnn.avg_pool2d")
     args = (x, x_scale, x_zero_point, y_scale, y_zero_point)
@@ -368,12 +445,10 @@ def avg_pool2d(
         count_include_pad=count_include_pad,
         layout=layout,
         out_layout=out_layout,
-        qaxis=qaxis,
     )
     return relax.Call(op, args, attrs)
 
 # NOTE: this is the only operator for now that supports dynamic quantization...
-# TODO: type check qaxis
 def infer_struct_info_qnn_linear_op(call: relax.Call, ctx: relax.block_builder.BlockBuilder) -> relax.struct_info.StructInfo:
     if len(call.args) not in (9, 10):
         raise ValueError("relax.qnn.linear expects either 8 or 9 arguments.")
@@ -407,6 +482,11 @@ def infer_struct_info_qnn_linear_op(call: relax.Call, ctx: relax.block_builder.B
             is_int(w_zp_sinfo.dtype)):
         raise ValueError("All input zero points must be integer tensors.")
 
+    if not (same_shape(x_scale_sinfo, x_zp_sinfo) and
+            same_shape(w_scale_sinfo, w_zp_sinfo) and
+            same_shape(y_scale_sinfo, y_zp_sinfo)):
+        raise ValueError("Scales and zero points pairs should have the same shape")
+
     out_shape = None
     if x_sinfo.shape is not None and w_sinfo.shape is not None:
         dummy_x = relax.Var("tmp_x", relax.TensorStructInfo(x_sinfo.shape, dtype="float32"))
@@ -424,6 +504,11 @@ def infer_struct_info_qnn_linear_op(call: relax.Call, ctx: relax.block_builder.B
             normalized = ctx.normalize(dummy_add)
 
         out_shape = normalized.struct_info.shape
+
+    if not (check_divisible(x_sinfo, x_zp_sinfo) and
+            check_divisible(out_shape, y_zp_sinfo) if out_shape is not None else True):
+        raise ValueError("All dimensions of the quantization parameters should "
+            "divide the ones of the respective quantized tensor.")
 
     out_dtype = y_zp_sinfo.dtype
     out_vdevice = x_sinfo.vdevice
@@ -455,28 +540,20 @@ def linear(
     w: relax.Expr, w_scale: relax.Expr, w_zero_point: relax.Expr,
     y_scale: relax.Expr, y_zero_point: relax.Expr,
     B: relax.Expr | None = None,
-    qaxis: int = -1,
 ) -> relax.Call:
     op = ir.Op.get("relax.qnn.linear")
     args = [alpha, x, x_scale, x_zero_point, w, w_scale, w_zero_point, y_scale, y_zero_point]
     if B is not None:
         args.append(B)
-    attrs = ir.make_node(
-        "ir.DictAttrs",
-        qaxis=qaxis,
-    )
-    return relax.Call(op, tuple(args), attrs)
+    return relax.Call(op, tuple(args))
 
 def softmax_attrs_to_dict(attrs: ir.DictAttrs) -> dict:
     axis = attrs["axis"]
-    qaxis = attrs["qaxis"]
     res = {
         "axis": axis,
-        "qaxis": qaxis,
     }
     return res
 
-# TODO: type check qaxis
 def infer_struct_info_qnn_softmax_op(call: relax.Call, ctx: relax.block_builder.BlockBuilder) -> relax.struct_info.StructInfo:
     if len(call.args) != 6:
         raise ValueError("relax.qnn.softmax expects 6 arguments.")
@@ -502,16 +579,24 @@ def infer_struct_info_qnn_softmax_op(call: relax.Call, ctx: relax.block_builder.
             is_int(y_zp_sinfo.dtype)):
         raise ValueError("All input zero points must be integer tensors.")
 
+    if not (same_shape(x_scale_sinfo, x_zp_sinfo) and
+            same_shape(y_scale_sinfo, y_zp_sinfo)):
+        raise ValueError("Scales and zero points pairs should have the same shape")
+
     out_shape = None
     if x_sinfo.shape is not None:
         dummy_x_sinfo = relax.TensorStructInfo(x_sinfo.shape, dtype="float32")
         dummy_x = relax.Var("tmp_x", dummy_x_sinfo)
 
         attrs = softmax_attrs_to_dict(call.attrs)
-        del attrs["qaxis"]
         dummy_softmax = relax.op.nn.softmax(dummy_x, **attrs)
         normalized = ctx.normalize(dummy_softmax)
         out_shape = normalized.struct_info.shape
+
+    if not (check_divisible(x_sinfo, x_zp_sinfo) and
+            check_divisible(out_shape, y_zp_sinfo) if out_shape is not None else True):
+        raise ValueError("All dimensions of the quantization parameters should "
+            "divide the ones of the respective quantized tensor.")
 
     out_dtype = y_zp_sinfo.dtype
     out_vdevice = y_zp_sinfo.vdevice
@@ -536,14 +621,12 @@ def softmax(
     x: relax.Expr, x_scale: relax.Expr, x_zero_point: relax.Expr,
     y_scale: relax.Expr, y_zero_point: relax.Expr,
     axis: int = -1,
-    qaxis: int = -1,
 ) -> relax.Call:
     op = ir.Op.get("relax.qnn.softmax")
     args = (beta, x, x_scale, x_zero_point, y_scale, y_zero_point)
     attrs = ir.make_node(
         "ir.DictAttrs",
         axis=axis,
-        qaxis=qaxis,
     )
     return relax.Call(op, args, attrs)
 
@@ -568,17 +651,17 @@ def infer_struct_info_qnn_dynamic_quantize_op(call: relax.Call, ctx: relax.block
     else:
         q_sinfo = relax.TensorStructInfo(x_sinfo.shape, dtype=out_dtype, vdevice=vdevice)
 
-    qaxis = call.attrs["qaxis"]
+    axis = call.attrs["axis"]
 
-    if qaxis is not None:
+    if axis is not None:
         if x_sinfo.ndim >= 0:
-            if qaxis < -x_sinfo.ndim or qaxis >= x_sinfo.ndim:
-                raise ValueError(f"qaxis {qaxis} is out of bounds for tensor of ndim {x_sinfo.ndim}")
-            if qaxis < 0:
-                qaxis += x_sinfo.ndim
+            if axis < -x_sinfo.ndim or axis >= x_sinfo.ndim:
+                raise ValueError(f"axis {axis} is out of bounds for tensor of ndim {x_sinfo.ndim}")
+            if axis < 0:
+                axis += x_sinfo.ndim
 
         if x_sinfo.shape is not None and hasattr(x_sinfo.shape, "values"):
-            dim = x_sinfo.shape.values[qaxis]
+            dim = x_sinfo.shape.values[axis]
             scale_sinfo = relax.TensorStructInfo([dim], scale_dtype, vdevice)
             zp_sinfo = relax.TensorStructInfo([dim], zp_dtype, vdevice)
         else:
@@ -597,21 +680,22 @@ qnn_dynamic_quantize_op = ir.Op.get("relax.qnn.dynamic_quantize")
 qnn_dynamic_quantize_op.set_num_inputs(1)
 qnn_dynamic_quantize_op.add_argument("x", "Tensor", "Input tensor.")
 
+# TODO: a shape should be passes to allow for per-block quantization...
 def dynamic_quantize(
     x: relax.Expr,
-    qaxis: Optional[int] = None,
+    axis: Optional[int] = None,
     out_dtype: str = "int8",
 ) -> relax.Call:
     """Calculates the scale and zero point for the input data x. out_dtype is
     used for both the dtype of the output and the zero_point. The scale has the
-    same dtype as the input. If an qaxis is provided per-axis quantization is
+    same dtype as the input. If an axis is provided per-axis quantization is
     performed.
     """
     op = ir.Op.get("relax.qnn.dynamic_quantize")
     args = (x,)
     attrs = ir.make_node(
         "ir.DictAttrs",
-        qaxis=qaxis,
+        axis=axis,
         out_dtype=out_dtype,
     )
     return relax.Call(op, args, attrs)
