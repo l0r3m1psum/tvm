@@ -4,7 +4,6 @@ if(USE_STRELA_CODEGEN)
     tvm_file_glob(GLOB COMPILER_STRELA_SRCS src/relax/backend/contrib/strela/*.cc)
     list(APPEND COMPILER_SRCS ${COMPILER_STRELA_SRCS})
 
-    tvm_file_glob(GLOB RUNTIME_STRELA_SRCS src/runtime/contrib/strela/*.cc)
     if(NOT USE_STRELA_RUNTIME)
         list(APPEND COMPILER_SRCS ${RUNTIME_STRELA_SRCS})
     endif()
