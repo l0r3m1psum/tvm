@@ -1122,39 +1122,6 @@ class OperatorConverter:
         first_tensor = input_tensors[0]
         return first_tensor.qnn_params is not None
 
-    def convert_qnn_fused_activation_function(
-        self, expr, fused_activation_fn, scale, zero_point, dtype
-    ):
-        """Convert TFLite fused activation function. The expr is an input quantized tensor with
-        scale and zero point"""
-
-        from tflite.ActivationFunctionType import ActivationFunctionType
-
-        # Quantize a float value to an quantized integer value
-        def quantize(x):
-            return float(round(x / scale) + zero_point)
-
-        # Get min/max of the output dtype. This will be used to ensure that clip a_min/a_max are not
-        # beyond the dtype range.
-        qmin = float(tvm.tirx.min_value(dtype).value)
-        qmax = float(tvm.tirx.max_value(dtype).value)
-
-        # The input expr is a quantized tensor with its scale and zero point. We calculate the
-        # suitable clip off points based on these scale and zero point.
-        if fused_activation_fn == ActivationFunctionType.NONE:
-            return expr
-        if fused_activation_fn == ActivationFunctionType.RELU6:
-            return relax.op.clip(expr, min=max(qmin, quantize(0)), max=min(qmax, quantize(6.0)))
-        if fused_activation_fn == ActivationFunctionType.RELU_N1_TO_1:
-            return relax.op.clip(expr, min=max(qmin, quantize(-1.0)), max=min(qmax, quantize(1.0)))
-        if fused_activation_fn == ActivationFunctionType.RELU:
-            return relax.op.clip(expr, min=max(qmin, quantize(0.0)), max=qmax)
-
-        fused_activation_fn_str = self.activation_fn_type[fused_activation_fn]
-        raise tvm.error.OpNotImplemented(
-            f"Quantized activation {fused_activation_fn_str} is not supported yet."
-        )
-
     def convert_reshape(self, op):
         """Convert TFLite reshape"""
 
@@ -1709,19 +1676,7 @@ class OperatorConverter:
             out = self.quantize(out, output_tensor)
 
         # Handle fused activations
-        if output_tensor.qnn_params:
-            scale_val = get_scalar_from_constant(output_tensor.qnn_params["scale"])
-            zero_point_val = get_scalar_from_constant(output_tensor.qnn_params["zero_point"])
-            output_tensor_type_str = self.get_tensor_type_str(output_tensor.tensor.Type())
-            out = self.convert_qnn_fused_activation_function(
-                expr=out,
-                fused_activation_fn=fused_activation_fn,
-                scale=scale_val,
-                zero_point=zero_point_val,
-                dtype=output_tensor_type_str,
-            )
-        else:
-            out = self.convert_fused_activation_function(out, fused_activation_fn)
+        out = self.convert_fused_activation_function(out, fused_activation_fn)
 
         return out
 
@@ -4125,19 +4080,7 @@ class OperatorConverter:
         if output_tensor.qnn_params:
             out = self.quantize(out, output_tensor)
 
-            # Call activation function
-            output_scale_val = get_scalar_from_constant(output_tensor.qnn_params["scale"])
-            output_zero_point_val = get_scalar_from_constant(output_tensor.qnn_params["zero_point"])
-            out = self.convert_qnn_fused_activation_function(
-                expr=out,
-                fused_activation_fn=fused_activation_fn,
-                scale=output_scale_val,
-                zero_point=output_zero_point_val,
-                dtype=output_tensor_type_str,
-            )
-
-        else:
-            out = self.convert_fused_activation_function(out, fused_activation_fn)
+        out = self.convert_fused_activation_function(out, fused_activation_fn)
 
         # Change the output shape calculation based on keep_dim option
         if keep_num_dims:
@@ -4410,18 +4353,7 @@ class OperatorConverter:
             # Quantize the float output using the output tensor's qnn params.
             out = self.quantize(out, output_tensor)
 
-            # Call quantized activation function
-            output_scale_val = get_scalar_from_constant(output_tensor.qnn_params["scale"])
-            output_zero_point_val = get_scalar_from_constant(output_tensor.qnn_params["zero_point"])
-            out = self.convert_qnn_fused_activation_function(
-                expr=out,
-                fused_activation_fn=fused_activation_fn,
-                scale=output_scale_val,
-                zero_point=output_zero_point_val,
-                dtype=output_tensor_type_str,
-            )
-        else:
-            out = self.convert_fused_activation_function(out, fused_activation_fn)
+        out = self.convert_fused_activation_function(out, fused_activation_fn)
         return out
 
     def convert_conv3d(self, op):
@@ -5200,17 +5132,12 @@ class OperatorConverter:
 
         # Handle fused activations
         if output_tensor.qnn_params:
-            scale_val = get_scalar_from_constant(output_tensor.qnn_params["scale"])
-            zero_point_val = get_scalar_from_constant(output_tensor.qnn_params["zero_point"])
-            out = self.convert_qnn_fused_activation_function(
-                expr=out,
-                fused_activation_fn=fused_activation_fn,
-                scale=scale_val,
-                zero_point=zero_point_val,
-                dtype=output_tensor_type_str,
+            assert self.has_same_qnn_params(input_tensor, output_tensor), (
+                "TFLite avg_pool2dreshape requires input and output scale"
+                "and zero points to be equal"
             )
-        else:
-            out = self.convert_fused_activation_function(out, fused_activation_fn)
+            # out = self.quantize(out, output_tensor)
+        out = self.convert_fused_activation_function(out, fused_activation_fn)
 
         return out
 
