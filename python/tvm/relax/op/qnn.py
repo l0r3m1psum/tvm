@@ -14,7 +14,7 @@ quantization parameters e.g. if the shape of the quantized data is (M,) and we
 want to have M/N quantization blocks than the quantization parameter will have
 the same shape (M/N,) assuming that M%N = 0.
 
-Broadcasting scale to zero point and vice versa can be supported.
+Broadcasting scale to zero point and vice versa is supported.
 
 Until now we have tacitly assumed all scales and zero points to be compile time
 constants to ease legalization of this operators by allowing to fuse the scales
@@ -67,35 +67,36 @@ def same_shape(s: relax.struct_info.TensorStructInfo, zp: relax.struct_info.Tens
 
 def check_divisible(
     data: relax.struct_info.TensorStructInfo,
-    qparam: relax.struct_info.TensorStructInfo
+    qparam1: relax.struct_info.TensorStructInfo,
+    qparam2: relax.struct_info.TensorStructInfo,
 ) -> bool:
-    # if isinstance(data, relax.ShapeExpr): breakpoint()
-    qparam_scalar = isinstance(qparam.shape, relax.ShapeExpr) and not qparam.shape.values
-    if qparam_scalar:
-        return True
+    for qparam in (qparam1, qparam2):
+        qparam_scalar = isinstance(qparam.shape, relax.ShapeExpr) and not qparam.shape.values
+        if qparam_scalar:
+            continue
 
-    if data.ndim == -1 or qparam.ndim == -1:
-        return True
+        if data.ndim == -1 or qparam.ndim == -1:
+            continue
 
-    if data.ndim != qparam.ndim:
-        return False
+        if data.ndim != qparam.ndim:
+            return False
 
-    if not isinstance(data.shape, relax.ShapeExpr) or not isinstance(qparam.shape, relax.ShapeExpr):
-        return True
+        if not isinstance(data.shape, relax.ShapeExpr) or not isinstance(qparam.shape, relax.ShapeExpr):
+            continue
 
-    for data_dim, qparam_dim in zip(data.shape.values, qparam.shape.values):
-        if isinstance(data_dim, tirx.IntImm) and isinstance(qparam_dim, tirx.IntImm):
-            q_val = int(qparam_dim)
+        for data_dim, qparam_dim in zip(data.shape.values, qparam.shape.values):
+            if isinstance(data_dim, tirx.IntImm) and isinstance(qparam_dim, tirx.IntImm):
+                q_val = int(qparam_dim)
 
-            if int(data_dim) % q_val != 0:
-                return False
+                if int(data_dim) % q_val != 0:
+                    return False
 
-        # If either is symbolic (tir.Var), we trust it and continue. We could
-        # try something like this
-        # cond = tir.truncmod(data_dim, qparam_dim) == 0
-        # analyzer.can_prove(cond)
-        # or introduce something like
-        # builder.emit(relax.op.assert_op(cond))
+            # If either is symbolic (tir.Var), we trust it and continue. We could
+            # try something like this
+            # cond = tir.truncmod(data_dim, qparam_dim) == 0
+            # analyzer.can_prove(cond)
+            # or introduce something like
+            # builder.emit(relax.op.assert_op(cond))
 
     return True
 
@@ -127,11 +128,6 @@ def infer_struct_info_qnn_add_op(call: relax.Call, ctx: relax.block_builder.Bloc
             is_int(c_zp_sinfo.dtype)):
         raise ValueError("All zero points must be integer tensors.")
 
-    if not (same_shape(a_scale_sinfo, a_zp_sinfo) and
-            same_shape(b_scale_sinfo, b_zp_sinfo) and
-            same_shape(c_scale_sinfo, c_zp_sinfo)):
-        raise ValueError("Scales and zero points pairs should have the same shape")
-
     def get_broadcast_shape(shape1: relax.expr.ShapeExpr, shape2: relax.expr.ShapeExpr) -> relax.TensorStructInfo:
        if shape1 is None or shape2 is None:
            return None
@@ -162,9 +158,9 @@ def infer_struct_info_qnn_add_op(call: relax.Call, ctx: relax.block_builder.Bloc
     # out_sinfo = get_broadcast_shape(out_sinfo.shape, c_zp_sinfo.shape) if out_sinfo is not None else None
     out_shape = out_sinfo.shape if out_sinfo is not None else None
 
-    if not (check_divisible(a_sinfo, a_zp_sinfo) and
-            check_divisible(b_sinfo, b_zp_sinfo) and
-            check_divisible(out_sinfo, c_zp_sinfo) if out_sinfo is not None else True):
+    if not (check_divisible(a_sinfo, a_scale_sinfo, a_zp_sinfo) and
+            check_divisible(b_sinfo, b_scale_sinfo, b_zp_sinfo) and
+            check_divisible(out_sinfo, c_scale_sinfo, c_zp_sinfo) if out_sinfo is not None else True):
         raise ValueError("All dimensions of the quantization parameters should "
             "divide the ones of the respective quantized tensor.")
 
@@ -258,11 +254,6 @@ def infer_struct_info_qnn_conv2d_op(call: relax.Call, ctx: relax.block_builder.B
             is_int(y_zp_sinfo.dtype)):
         raise ValueError("All zero points must be integer tensors.")
 
-    if not (same_shape(x_scale_sinfo, x_zp_sinfo) and
-            same_shape(w_scale_sinfo, w_zp_sinfo) and
-            same_shape(y_scale_sinfo, y_zp_sinfo)):
-        raise ValueError("Scales and zero points pairs should have the same shape")
-
     out_shape = None
     if x_sinfo.shape is not None and w_sinfo.shape is not None:
         dummy_x = relax.Var("tmp_x", relax.TensorStructInfo(x_sinfo.shape, dtype="float32"))
@@ -280,9 +271,9 @@ def infer_struct_info_qnn_conv2d_op(call: relax.Call, ctx: relax.block_builder.B
 
         out_shape = normalized.struct_info.shape
 
-    if not (check_divisible(x_sinfo, x_zp_sinfo) and
-            check_divisible(w_sinfo, w_zp_sinfo) and
-            check_divisible(out_shape, y_zp_sinfo) if out_shape is not None else True):
+    if not (check_divisible(x_sinfo, x_scale_sinfo, x_zp_sinfo) and
+            check_divisible(w_sinfo, w_scale_sinfo, w_zp_sinfo) and
+            check_divisible(out_shape, y_scale_sinfo, y_zp_sinfo) if out_shape is not None else True):
         raise ValueError("All dimensions of the quantization parameters should "
             "divide the ones of the respective quantized tensor.")
 
@@ -384,10 +375,6 @@ def infer_struct_info_qnn_avg_pool2d_op(call: relax.Call, ctx: relax.block_build
             is_int(y_zp_sinfo.dtype)):
         raise ValueError("All zero points must be integer tensors.")
 
-    if not (same_shape(x_scale_sinfo, x_zp_sinfo) and
-            same_shape(y_scale_sinfo, y_zp_sinfo)):
-        raise ValueError("Scales and zero points pairs should have the same shape")
-
     out_shape = None
     if x_sinfo.shape is not None:
         dummy_x_sinfo = relax.TensorStructInfo(x_sinfo.shape, dtype="float32")
@@ -398,9 +385,8 @@ def infer_struct_info_qnn_avg_pool2d_op(call: relax.Call, ctx: relax.block_build
         normalized = ctx.normalize(dummy_pool)
         out_shape = normalized.struct_info.shape
 
-    if not (check_divisible(x_sinfo, x_zp_sinfo) and
-            check_divisible(out_shape, y_zp_sinfo) if out_shape is not None else True):
-        # breakpoint()
+    if not (check_divisible(x_sinfo, x_scale_sinfo, x_zp_sinfo) and
+            check_divisible(out_shape, y_scale_sinfo, y_zp_sinfo) if out_shape is not None else True):
         raise ValueError("All dimensions of the quantization parameters should "
             "divide the ones of the respective quantized tensor.")
 
@@ -448,7 +434,6 @@ def avg_pool2d(
     )
     return relax.Call(op, args, attrs)
 
-# NOTE: this is the only operator for now that supports dynamic quantization...
 def infer_struct_info_qnn_linear_op(call: relax.Call, ctx: relax.block_builder.BlockBuilder) -> relax.struct_info.StructInfo:
     if len(call.args) not in (9, 10):
         raise ValueError("relax.qnn.linear expects either 8 or 9 arguments.")
@@ -479,13 +464,9 @@ def infer_struct_info_qnn_linear_op(call: relax.Call, ctx: relax.block_builder.B
         raise ValueError("Bias must be an integer tensors.")
 
     if not (is_int(x_zp_sinfo.dtype) and
-            is_int(w_zp_sinfo.dtype)):
+            is_int(w_zp_sinfo.dtype) and
+            is_int(y_zp_sinfo.dtype)):
         raise ValueError("All input zero points must be integer tensors.")
-
-    if not (same_shape(x_scale_sinfo, x_zp_sinfo) and
-            same_shape(w_scale_sinfo, w_zp_sinfo) and
-            same_shape(y_scale_sinfo, y_zp_sinfo)):
-        raise ValueError("Scales and zero points pairs should have the same shape")
 
     out_shape = None
     if x_sinfo.shape is not None and w_sinfo.shape is not None:
@@ -505,8 +486,9 @@ def infer_struct_info_qnn_linear_op(call: relax.Call, ctx: relax.block_builder.B
 
         out_shape = normalized.struct_info.shape
 
-    if not (check_divisible(x_sinfo, x_zp_sinfo) and
-            check_divisible(out_shape, y_zp_sinfo) if out_shape is not None else True):
+    if not (check_divisible(x_sinfo, x_scale_sinfo, x_zp_sinfo) and
+            check_divisible(w_sinfo, w_scale_sinfo, w_zp_sinfo) and
+            check_divisible(out_shape, y_scale_sinfo, y_zp_sinfo) if out_shape is not None else True):
         raise ValueError("All dimensions of the quantization parameters should "
             "divide the ones of the respective quantized tensor.")
 
@@ -579,10 +561,6 @@ def infer_struct_info_qnn_softmax_op(call: relax.Call, ctx: relax.block_builder.
             is_int(y_zp_sinfo.dtype)):
         raise ValueError("All input zero points must be integer tensors.")
 
-    if not (same_shape(x_scale_sinfo, x_zp_sinfo) and
-            same_shape(y_scale_sinfo, y_zp_sinfo)):
-        raise ValueError("Scales and zero points pairs should have the same shape")
-
     out_shape = None
     if x_sinfo.shape is not None:
         dummy_x_sinfo = relax.TensorStructInfo(x_sinfo.shape, dtype="float32")
@@ -593,8 +571,8 @@ def infer_struct_info_qnn_softmax_op(call: relax.Call, ctx: relax.block_builder.
         normalized = ctx.normalize(dummy_softmax)
         out_shape = normalized.struct_info.shape
 
-    if not (check_divisible(x_sinfo, x_zp_sinfo) and
-            check_divisible(out_shape, y_zp_sinfo) if out_shape is not None else True):
+    if not (check_divisible(x_sinfo, x_scale_sinfo, x_zp_sinfo) and
+            check_divisible(out_shape, y_scale_sinfo, y_zp_sinfo) if out_shape is not None else True):
         raise ValueError("All dimensions of the quantization parameters should "
             "divide the ones of the respective quantized tensor.")
 
