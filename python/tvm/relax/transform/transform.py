@@ -1908,3 +1908,329 @@ def dataflowblock_pass(
     if pass_func:
         return create_dataflowblock_pass(pass_func)
     return create_dataflowblock_pass
+
+from tvm import ir, relax
+import numpy
+import warnings
+
+@ir.transform.module_pass(opt_level=0)
+class NormalizeQQDPatterns:
+    """Let f be an homogeneous function of degree 1 i.e. for all scalars alpha
+    f(alpha x) = alpha f(x), let q be the quantization function and dq be the
+    dequantization function. This transform rewrites
+        * dq(f(x)) => f(dq(x)) and
+        * f(q(x)) => q(f(x)),
+    until a fixed point is reached.
+
+    This is needed to make q(dq) patterns smaller and easier to match. The f
+    usually applied after dequantization are reshape or permute_dims (or
+    transpose) on constants which are expected to be removed by a later constant
+    folding step. The f usually applied before quantization is an activation
+    which is expected to be fused by a later operator fusion step.
+
+                dq
+               /
+    dq        transpose     dq        dq
+      \      /                \      /
+       matmul                  conv2d
+         |                       |
+        add-dq                  add-reshape-dq
+         |                       |
+        relu                 leakyrelu
+         |                       |
+         q                       q
+    """
+    def transform_module(self, mod, ctx):
+
+        # homogeneous if the condition is not a function of alpha
+        #     masked_fill, where
+        # homogeneous of degree 0 if input scaled together
+        #     equal, greater, greater_equal, less, less_equal, not_equal
+        # homogeneous of degree 1 if input scaled together
+        #     add, subtract, maximum, minimum
+        # homogeneous of degree 1 or 2 if scaled 1 or two arguments
+        #     einsum, linear, matmul, outer
+        #     conv1d, conv2d, conv3d
+        #     conv1d_transpose, conv2d_transpose, conv3d_transpose
+
+        # TODO: This would be the dream but supporting all this stuff requires a
+        # lot of work.
+        homogeneous_func = (
+            relax.dpl.is_op("relax.broadcast_to")
+            | relax.dpl.is_op("relax.concat")
+            | relax.dpl.is_op("relax.expand_dims")
+            | relax.dpl.is_op("relax.flatten")
+            | relax.dpl.is_op("relax.flip")
+            | relax.dpl.is_op("relax.gather_elements")
+            | relax.dpl.is_op("relax.gather_nd")
+            | relax.dpl.is_op("relax.index_put")
+            | relax.dpl.is_op("relax.index_tensor")
+            | relax.dpl.is_op("relax.layout_transform")
+            | relax.dpl.is_op("relax.permute_dims")
+            | relax.dpl.is_op("relax.repeat")
+            | relax.dpl.is_op("relax.reshape")
+            | relax.dpl.is_op("relax.scatter_elements")
+            | relax.dpl.is_op("relax.scatter_nd")
+            | relax.dpl.is_op("relax.slice_scatter")
+            | relax.dpl.is_op("relax.split")
+            | relax.dpl.is_op("relax.squeeze")
+            | relax.dpl.is_op("relax.stack")
+            | relax.dpl.is_op("relax.tile")
+            | relax.dpl.is_op("relax.dynamic_strided_slice")
+            | relax.dpl.is_op("relax.strided_slice")
+            | relax.dpl.is_op("relax.take")
+
+            | relax.dpl.is_op("relax.abs")
+            | relax.dpl.is_op("relax.negative")
+
+            | relax.dpl.is_op("relax.vision.roi_align")
+            | relax.dpl.is_op("relax.vision.roi_pool")
+
+            # For reductions we have to assume -ffast-math
+            | relax.dpl.is_op("relax.max")
+            | relax.dpl.is_op("relax.min")
+            | relax.dpl.is_op("relax.mean")
+            | relax.dpl.is_op("relax.median")
+            | relax.dpl.is_op("relax.sum")
+            | relax.dpl.is_op("relax.collapse_sum_like")
+            | relax.dpl.is_op("relax.collapse_sum_to")
+            | relax.dpl.is_op("relax.cumsum")
+            | relax.dpl.is_op("relax.std")
+
+            # Remember that scale is always positive
+            | relax.dpl.is_op("relax.sort")
+            | relax.dpl.is_op("relax.topk")
+
+            # This are homogeneous of degree 0 i.e. f(alpha x) = f(x)
+            | relax.dpl.is_op("relax.argmax")
+            | relax.dpl.is_op("relax.argmin")
+            | relax.dpl.is_op("relax.argsort")
+            | relax.dpl.is_op("relax.nonzero")
+            | relax.dpl.is_op("relax.bucketize")
+            | relax.dpl.is_op("relax.unique")
+            | relax.dpl.is_op("relax.shape_of")
+            | relax.dpl.is_op("relax.size")
+            | relax.dpl.is_op("relax.tensor_to_shape")
+            | relax.dpl.is_op("relax.isfinite")
+            | relax.dpl.is_op("relax.isinf")
+            | relax.dpl.is_op("relax.isnan")
+            | relax.dpl.is_op("relax.sign")
+
+            | relax.dpl.is_op("relax.nn.relu")
+            | relax.dpl.is_op("relax.nn.leakyrelu")
+            | relax.dpl.is_op("relax.nn.prelu")
+
+            # This functions are excluded just because they are supposed to be
+            # at the center of the q(dq) pattern.
+            # | relax.dpl.is_op("relax.nn.adaptive_avg_pool1d")
+            # | relax.dpl.is_op("relax.nn.adaptive_avg_pool2d")
+            # | relax.dpl.is_op("relax.nn.adaptive_avg_pool3d")
+            # | relax.dpl.is_op("relax.nn.avg_pool1d")
+            # | relax.dpl.is_op("relax.nn.avg_pool2d")
+            # | relax.dpl.is_op("relax.nn.avg_pool3d")
+
+            | relax.dpl.is_op("relax.nn.max_pool1d")
+            | relax.dpl.is_op("relax.nn.max_pool2d")
+            | relax.dpl.is_op("relax.nn.max_pool3d")
+
+            | relax.dpl.is_op("relax.nn.batch_flatten")
+            | relax.dpl.is_op("relax.nn.pad")
+            | relax.dpl.is_op("relax.nn.pixel_shuffle")
+            | relax.dpl.is_op("relax.nn.dropout")
+        )
+
+        homogeneous_func = lambda x: (
+            relax.dpl.is_op("relax.reshape")(x, relax.dpl.wildcard())
+            | relax.dpl.is_op("relax.permute_dims")(x)
+            | relax.dpl.is_op("relax.nn.relu")(x)
+        )
+
+        # f(dq(x)) => dq(f(x))
+        dq_pattern_input = relax.dpl.wildcard()
+        dq_pattern_middle = relax.dpl.is_op("relax.dequantize")(
+            dq_pattern_input, relax.dpl.wildcard(), relax.dpl.wildcard()
+        )
+        dq_pattern_output = homogeneous_func(dq_pattern_middle)
+
+        # q(f(x)) = f(q(x))
+        q_pattern_input = relax.dpl.wildcard()
+        q_pattern_middle = homogeneous_func(q_pattern_input)
+        q_pattern_output = relax.dpl.is_op("relax.quantize")(
+            q_pattern_middle, relax.dpl.wildcard(), relax.dpl.wildcard()
+        )
+
+        pattern = dq_pattern_output | q_pattern_output
+
+        def rewriter(call: relax.Call, match_map: ir.Map) -> relax.Expr:
+            if dq_pattern_output in match_map:
+                input = match_map[dq_pattern_input]
+                middle = match_map[dq_pattern_middle]
+                output = match_map[dq_pattern_output]
+                breakpoint()
+            else:
+                assert q_pattern_output in match_map
+                input = match_map[q_pattern_input]
+                middle = match_map[q_pattern_middle]
+                output = match_map[q_pattern_output]
+                if middle.op.name == "relax.reshape":
+                    breakpoint()
+                elif middle.op.name == "permute_dims":
+                    breakpoint()
+                # We apply the quantize first
+                res = relax.Call(output.op, [input] + output.args[1:], output.attrs)
+                # and then the function
+                res = relax.Call(middle.op, [res], middle.attrs)
+            return res
+
+        for global_var, func in mod.functions.items():
+            if isinstance(func, relax.Function):
+                new_func = relax.dpl.rewrite_call(pattern, rewriter, func)
+                new_func = relax.analysis.remove_all_unused(new_func)
+                mod.update_func(global_var, new_func)
+
+        return mod
+
+@ir.transform.module_pass(opt_level=0)
+class RewriteQDQPatterns:
+    def transform_module(self, mod, ctx):
+
+        qbilinear_dq_x = relax.dpl.is_op("relax.dequantize")(
+            relax.dpl.wildcard(), relax.dpl.is_const(), relax.dpl.is_const()
+        )
+        qbilinear_dq_w = relax.dpl.is_op("relax.dequantize")(
+            relax.dpl.wildcard(), relax.dpl.is_const(), relax.dpl.is_const()
+        )
+        qbilinear_dq_b = relax.dpl.is_op("relax.dequantize")(
+            relax.dpl.wildcard(), relax.dpl.is_const(), relax.dpl.is_const()
+        )
+        qbilinear_op = (
+            relax.dpl.is_op("relax.nn.conv2d") | relax.dpl.is_op("relax.matmul")
+        )(qbilinear_dq_x, qbilinear_dq_w)
+        qbilinear_bias = relax.dpl.is_op("relax.add")(
+            qbilinear_op, qbilinear_dq_b
+        ) | qbilinear_op
+        qbilinear_q_y = relax.dpl.is_op("relax.quantize")(
+            qbilinear_bias, relax.dpl.is_const(), relax.dpl.is_const()
+        )
+
+        qadd_dq_a = relax.dpl.is_op("relax.dequantize")(
+            relax.dpl.wildcard(), relax.dpl.is_const(), relax.dpl.is_const()
+        )
+        qadd_dq_b = relax.dpl.is_op("relax.dequantize")(
+            relax.dpl.wildcard(), relax.dpl.is_const(), relax.dpl.is_const()
+        )
+        qadd_op = relax.dpl.is_op("relax.add")(qadd_dq_a, qadd_dq_b)
+        qadd_q_c = relax.dpl.is_op("relax.quantize")(
+            qadd_op, relax.dpl.is_const(), relax.dpl.is_const()
+        )
+
+        # A single pattern must be used in this case because if this is
+        # splitted in two passes of relax.dpl.rewrite_call (or using
+        # relax.transform.FuseOpsByPattern with two different patterns) there
+        # are some dequantize which have out degree 2 i.e are used by more than
+        # one node after. If two patterns are used the dequantize node are
+        # removed by the first and the second one can't use it.
+        pattern = qadd_q_c | qbilinear_q_y
+
+        def reshape_if_needed(ndim: int, const: relax.Constant, axis: int) -> relax.Constant:
+            res = const
+            shape_values = const.struct_info.shape.values
+            if shape_values:
+                if len(shape_values) != 1:
+                    raise ValueError("Only vectors are supported")
+                shape = [1 for _ in range(ndim)]
+                shape[axis] = int(shape_values[0])
+                res = relax.const(const.data.numpy().reshape(shape))
+            return res
+
+        def rewriter(call: relax.Call, match_map: ir.Map) -> relax.Expr:
+            if qadd_q_c in match_map:
+                a, a_s, a_zp = match_map[qadd_dq_a].args
+                b, b_s, b_zp = match_map[qadd_dq_b].args
+                c, c_s, c_zp = match_map[qadd_q_c].args
+
+                # TODO: reshape accordingly...
+                a_axis = match_map[qadd_dq_a].attrs.axis
+                a_ndim = a.struct_info.ndim
+                b_axis = match_map[qadd_dq_b].attrs.axis
+                b_ndim = b.struct_info.ndim
+                c_axis = match_map[qadd_dq_b].attrs.axis
+                c_ndim = c.struct_info.ndim
+
+                a_s = reshape_if_needed(a_ndim, a_s, a_axis)
+                a_zp = reshape_if_needed(a_ndim, a_zp, a_axis)
+                b_s = reshape_if_needed(b_ndim, b_s, b_axis)
+                b_zp = reshape_if_needed(b_ndim, b_zp, b_axis)
+                c_s = reshape_if_needed(c_ndim, c_s, c_axis)
+                c_zp = reshape_if_needed(c_ndim, c_zp, c_axis)
+
+                res = relax.op.qnn.add(a, a_s, a_zp, b, b_s, b_zp, c_s, c_zp)
+            else:
+                assert qbilinear_q_y in match_map
+                x, x_s, x_zp = match_map[qbilinear_dq_x].args
+                w, w_s, w_zp = match_map[qbilinear_dq_w].args
+                y, y_s, y_zp = match_map[qbilinear_q_y].args
+
+                x_axis = match_map[qbilinear_dq_x].attrs.axis
+                x_ndim = x.struct_info.ndim
+                w_axis = match_map[qbilinear_dq_w].attrs.axis
+                w_ndim = w.struct_info.ndim
+                y_axis = match_map[qbilinear_q_y].attrs.axis
+                y_ndim = y.struct_info.ndim
+
+                x_s = reshape_if_needed(x_ndim, x_s, x_axis)
+                x_zp = reshape_if_needed(x_ndim, x_zp, x_axis)
+                w_s = reshape_if_needed(w_ndim, w_s, w_axis)
+                w_zp = reshape_if_needed(w_ndim, w_zp, w_axis)
+                y_s = reshape_if_needed(y_ndim, y_s, y_axis)
+                y_zp = reshape_if_needed(y_ndim, y_zp, y_axis)
+
+                args = [x, x_s, x_zp, w, w_s, w_zp, y_s, y_zp]
+                bilinear_call = match_map[qbilinear_op]
+                if bilinear_call.op.name == "relax.matmul":
+                    args.insert(0, relax.const(1.0))
+
+                if qbilinear_dq_b in match_map:
+                    b, b_s, b_zp = match_map[qbilinear_dq_b].args
+
+                    b_s_old = b_s.data.numpy()
+                    b_zp_old = b_zp.data.numpy()
+
+                    b_s_new = x_s * w_s
+                    # This comparison is safe to do even in floating point since
+                    # IEEE-754 binary floating point multiplication is correct
+                    # up to rounding and commutative. The only catch is that the
+                    # global floating point rounding mode needs to be the same
+                    # as one specified by ONNX.
+                    if (b_s_old != b_s_new).any() and (b_zp_old != 0).any():
+                        warnings.warn("requantizing bias")
+                        b_old = (b.data.numpy() - b_zp_old) * b_s_old
+
+                        b_zp_new = numpy.zeros_like(b_s_new)
+                        b_new = b_old / b_s_new + b_zp_new
+
+                        b = relax.const(
+                            numpy.clip(
+                                numpy.round(b_new),
+                                numpy.iinfo("int32").min,
+                                numpy.iinfo("int32").max,
+                            ).astype("int32")
+                        )
+
+                    args.append(b)
+                if bilinear_call.op.name == "relax.matmul":
+                    op = ir.Op.get("relax.qnn.linear")
+                elif bilinear_call.op.name == "relax.nn.conv2d":
+                    op = ir.Op.get("relax.qnn.conv2d")
+                else:
+                    assert False
+                res = relax.Call(op, args, bilinear_call.attrs)
+            return res
+
+        for global_var, func in mod.functions.items():
+            if isinstance(func, relax.Function):
+                new_func = relax.dpl.rewrite_call(pattern, rewriter, func)
+                new_func = relax.analysis.remove_all_unused(new_func)
+                mod.update_func(global_var, new_func)
+
+        return mod
