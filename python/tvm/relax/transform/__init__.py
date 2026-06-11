@@ -86,8 +86,9 @@ from .transform import (
     SpecializePrimFuncBasedOnCallSite,
     dataflowblock_pass,
     function_pass,
-    RewriteQDQPatterns,
-    NormalizeQQDPatterns,
+    RewriteQDQPatternsToQNNOps,
+    NormalizeQDQPatterns,
+    LowerQNNOps,
 )
 
 from .attach_external_modules import AttachExternModules

@@ -1914,7 +1914,7 @@ import numpy
 import warnings
 
 @ir.transform.module_pass(opt_level=0)
-class NormalizeQQDPatterns:
+class NormalizeQDQPatterns:
     """Let f be an homogeneous function of degree 1 i.e. for all scalars alpha
     f(alpha x) = alpha f(x), let q be the quantization function and dq be the
     dequantization function. This transform rewrites
@@ -2091,7 +2091,7 @@ class NormalizeQQDPatterns:
         return mod
 
 @ir.transform.module_pass(opt_level=0)
-class RewriteQDQPatterns:
+class RewriteQDQPatternsToQNNOps:
     def transform_module(self, mod, ctx):
 
         qbilinear_dq_x = relax.dpl.is_op("relax.dequantize")(
@@ -2231,5 +2231,210 @@ class RewriteQDQPatterns:
                 new_func = relax.dpl.rewrite_call(pattern, rewriter, func)
                 new_func = relax.analysis.remove_all_unused(new_func)
                 mod.update_func(global_var, new_func)
+
+        return mod
+
+from typing import List
+from tvm import topi
+
+def to_int_list(xs: tvm_ffi.Array) -> List[int]:
+    return [int(x) for x in xs]
+
+def is_broadcastable(*shapes) -> bool:
+    try:
+        numpy.broadcast_shapes(*shapes)
+        return True
+    except ValueError:
+        return False
+
+# NOTE: This is done this way instead of using clip to accommodate VTA but for
+# a more generic implementation it might be better to use relax.op.clip
+def clamp(data: relax.Expr, min, max) -> relax.Expr:
+    res = relax.op.minimum(data, relax.const(max))
+    res = relax.op.maximum(relax.const(min), res)
+    return res
+
+def const_astype(x: relax.Constant, dtype: str) -> relax.Constant:
+    # TODO: check that conversion is safe to do
+    return relax.const(x.data.numpy().astype(dtype))
+
+def requantize(s: relax.Constant, x: relax.Expr, z: relax.Constant) -> relax.Expr:
+    res = x
+    if not (s.data.numpy() == 1).all():
+        res *= s
+    if not (z.data.numpy() == 0).all():
+        res += const_astype(z, "float32")
+    res = relax.op.round(res)
+    res = clamp(res, -128., 127.).astype("int8")
+    return res
+
+# TODO: this should accept a parameter for simulated quantization...
+@relax.expr_functor.mutator
+class LowerQNNOpsMutator(relax.PyExprMutator):
+    def visit_call_(self, call: relax.Call) -> relax.Call:
+        res = call
+        op_name = getattr(call.op, "name", "")
+        if op_name == "relax.qnn.conv2d" or op_name == "relax.qnn.linear":
+            (
+                x, x_s, x_zp,
+                w, w_s, w_zp,
+                y_s, y_zp,
+            ) = call.args[:8]
+            b = call.args[8] if len(call.args) == 9 else None
+
+            if (
+                not is_broadcastable(
+                    to_int_list(x.struct_info.shape.values),
+                    to_int_list(x_s.struct_info.shape.values),
+                    to_int_list(x_zp.struct_info.shape.values),
+                ) or not is_broadcastable(
+                    to_int_list(w.struct_info.shape.values),
+                    to_int_list(w_s.struct_info.shape.values),
+                    to_int_list(w_zp.struct_info.shape.values),
+                ) or not is_broadcastable(
+                    to_int_list(call.struct_info.shape.values),
+                    to_int_list(y_s.struct_info.shape.values),
+                    to_int_list(y_zp.struct_info.shape.values),
+                )
+            ):
+                raise ValueError("Per-block quantization is not supported yet")
+
+            # The result should be correctly rounded.
+            m = relax.const(
+                (x_s.data.numpy().astype("float64")
+                    * w_s.data.numpy().astype("float64"))
+                / y_s.data.numpy().astype("float64"),
+                dtype="float32"
+            )
+
+            x_ones = relax.op.ones_like(x)
+            w_ones = relax.op.ones_like(w)
+            x_zp_int = const_astype(x_zp, "int32")
+            w_zp_int = const_astype(w_zp, "int32")
+
+            x_zp_all_zero = (x_zp.data.numpy() == 0).all()
+            w_zp_all_zero = (w_zp.data.numpy() == 0).all()
+
+            if op_name == "relax.qnn.conv2d":
+                kwargs = relax.op.qnn.conv2d_attrs_to_dict(call.attrs)
+                kwargs["out_dtype"] = "int32"
+                res = relax.op.nn.conv2d(x, w, **kwargs)
+                if not x_zp_all_zero:
+                    res -= x_zp_int*relax.op.nn.conv2d(x_ones, w, **kwargs)
+                if not w_zp_all_zero:
+                    res -= w_zp_int*relax.op.nn.conv2d(x, w_ones, **kwargs)
+                if not x_zp_all_zero and not w_zp_all_zero:
+                    res += x_zp_int*w_zp_int*relax.op.nn.conv2d(x_ones, w_ones, **kwargs)
+            elif op_name == "relax.qnn.linear":
+                rows, cols = 0, 1
+                # From "Quantization and Training of Neural Networks for Efficient
+                # Integer-Arithmetic-Only Inference"
+                n = relax.const(topi.utils.get_const_tuple(relax.get_shape_of(x))[1])
+                res = relax.op.matmul(x, w, out_dtype="int32")
+                if not x_zp_all_zero:
+                    res -= x_zp_int*relax.op.sum(w.astype("int32"), axis=rows, keepdims=True)
+                if not w_zp_all_zero:
+                    res -= w_zp_int*relax.op.sum(x.astype("int32"), axis=cols, keepdims=True)
+                if not x_zp_all_zero and not w_zp_all_zero:
+                    res += n*x_zp_int*w_zp_int
+            else:
+                assert False
+
+            if b:
+                res += b
+
+            res = requantize(m, res.astype("float32"), y_zp)
+        elif op_name == "relax.qnn.add":
+            (
+                a, a_s, a_zp,
+                b, b_s, b_zp,
+                c_s, c_zp,
+            ) = call.args
+
+            if (
+                not is_broadcastable(
+                    to_int_list(a.struct_info.shape.values),
+                    to_int_list(a_s.struct_info.shape.values),
+                    to_int_list(a_zp.struct_info.shape.values),
+                ) or not is_broadcastable(
+                    to_int_list(b.struct_info.shape.values),
+                    to_int_list(b_s.struct_info.shape.values),
+                    to_int_list(b_zp.struct_info.shape.values),
+                ) or not is_broadcastable(
+                    to_int_list(call.struct_info.shape.values),
+                    to_int_list(c_s.struct_info.shape.values),
+                    to_int_list(c_zp.struct_info.shape.values),
+                )
+            ):
+                raise ValueError("Per-block quantization is not supported yet")
+
+            # C = (A_s * (A - A_z) + B_s * (B - B_z))/C_s + C_z
+            # C = A_s/C_s * (A - A_z) + B_s/C_s * (B - B_z) + C_z
+            c_s_float = c_s.data.numpy()
+            a_m_float = a_s.data.numpy() / c_s_float
+            b_m_float = b_s.data.numpy() / c_s_float
+            a_m = relax.const(a_m_float)
+            b_m = relax.const(b_m_float)
+
+            lhs = a.astype("int32")
+            if not (a_zp.data.numpy() == 0).all():
+                lhs -= const_astype(a_zp, "int32")
+            lhs = lhs.astype("float32")
+            if not (a_m_float == 1).all():
+                lhs *= a_m
+
+            rhs = b.astype("int32")
+            if not (b_zp.data.numpy() == 0).all():
+                rhs -= const_astype(b_zp, "int32")
+            rhs = rhs.astype("float32")
+            if not (b_m_float == 1).all():
+                rhs *= b_m
+
+            res = lhs + rhs
+            res = requantize(relax.const(1.0), res, c_zp)
+        elif op_name == "relax.qnn.avg_pool2d":
+            (
+                x, x_s, x_zp,
+                   y_s, y_zp,
+            ) = call.args
+
+            if (
+                not is_broadcastable(
+                    to_int_list(x.struct_info.shape.values),
+                    to_int_list(x_s.struct_info.shape.values),
+                    to_int_list(x_zp.struct_info.shape.values),
+                ) or not is_broadcastable(
+                    to_int_list(call.struct_info.shape.values),
+                    to_int_list(y_s.struct_info.shape.values),
+                    to_int_list(y_zp.struct_info.shape.values),
+                )
+            ):
+                raise ValueError("Per-block quantization is not supported yet")
+
+            m = relax.const(x_s.data.numpy()/y_s.data.numpy())
+            res = relax.op.nn.avg_pool2d(
+                data=x.astype("int32"),
+                **relax.op.qnn.avg_pool2d_attrs_to_dict(call.attrs)
+            ).astype("int32")
+            if (x_zp.data.numpy() != 0).any():
+                res -= const_astype(x_zp, "int32")
+
+            res = requantize(m, res.astype("float32"), y_zp)
+
+        if res is call:
+            res = super().visit_call_(call)
+
+        return res
+
+@ir.transform.module_pass(opt_level=0)
+class LowerQNNOps:
+    def transform_module(self, mod: ir.IRModule, _ctx: ir.transform.PassContext) -> ir.IRModule:
+        mutator = LowerQNNOpsMutator(mod)
+
+        for global_var, func in mod.functions.items():
+            if isinstance(func, relax.Function):
+                updated_func = mutator.visit_expr(func)
+                updated_func = relax.analysis.remove_all_unused(updated_func)
+                mod.update_func(global_var, updated_func)
 
         return mod
