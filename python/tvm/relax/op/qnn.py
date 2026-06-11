@@ -435,24 +435,22 @@ def avg_pool2d(
     return relax.Call(op, args, attrs)
 
 def infer_struct_info_qnn_linear_op(call: relax.Call, ctx: relax.block_builder.BlockBuilder) -> relax.struct_info.StructInfo:
-    if len(call.args) not in (9, 10):
+    if len(call.args) not in (8, 9):
         raise ValueError("relax.qnn.linear expects either 8 or 9 arguments.")
 
     sinfo = get_tensors_sinfo(call.args)
 
-    alpha_sinfo = sinfo[0]
-    x_sinfo = sinfo[1]
-    x_scale_sinfo = sinfo[2]
-    x_zp_sinfo = sinfo[3]
-    w_sinfo = sinfo[4]
-    w_scale_sinfo = sinfo[5]
-    w_zp_sinfo = sinfo[6]
-    y_scale_sinfo = sinfo[7]
-    y_zp_sinfo = sinfo[8]
-    b_sinfo = sinfo[9] if len(call.args) == 10 else None
+    x_sinfo = sinfo[0]
+    x_scale_sinfo = sinfo[1]
+    x_zp_sinfo = sinfo[2]
+    w_sinfo = sinfo[3]
+    w_scale_sinfo = sinfo[4]
+    w_zp_sinfo = sinfo[5]
+    y_scale_sinfo = sinfo[6]
+    y_zp_sinfo = sinfo[7]
+    b_sinfo = sinfo[8] if len(call.args) == 9 else None
 
-    if not (is_float(alpha_sinfo.dtype) and
-            is_float(x_scale_sinfo.dtype) and
+    if not (is_float(x_scale_sinfo.dtype) and
             is_float(w_scale_sinfo.dtype) and
             is_float(y_scale_sinfo.dtype)):
         raise ValueError("All scales must be float tensors.")
@@ -504,8 +502,7 @@ ir.register_op_attr("relax.qnn.linear", "FInferStructInfo", infer_struct_info_qn
 # beta is not present between the parameters because we expect it to be constant
 # folded in B.
 qnn_linear_op = ir.Op.get("relax.qnn.linear")
-qnn_linear_op.set_num_inputs(10)
-qnn_linear_op.add_argument("alpha", "Tensor", "Alpha scale.")
+qnn_linear_op.set_num_inputs(9)
 qnn_linear_op.add_argument("x", "Tensor", "Input tensor.")
 qnn_linear_op.add_argument("x_scale", "Tensor", "Scale of the input.")
 qnn_linear_op.add_argument("x_zero_point", "Tensor", "Zero point of the input.")
@@ -517,14 +514,13 @@ qnn_linear_op.add_argument("y_zero_point", "Tensor", "Zero point of the output."
 qnn_linear_op.add_argument("B", "Optional[Tensor]", "Optional bias tensor.")
 
 def linear(
-    alpha: relax.Expr,
     x: relax.Expr, x_scale: relax.Expr, x_zero_point: relax.Expr,
     w: relax.Expr, w_scale: relax.Expr, w_zero_point: relax.Expr,
     y_scale: relax.Expr, y_zero_point: relax.Expr,
     B: relax.Expr | None = None,
 ) -> relax.Call:
     op = ir.Op.get("relax.qnn.linear")
-    args = [alpha, x, x_scale, x_zero_point, w, w_scale, w_zero_point, y_scale, y_zero_point]
+    args = [x, x_scale, x_zero_point, w, w_scale, w_zero_point, y_scale, y_zero_point]
     if B is not None:
         args.append(B)
     return relax.Call(op, tuple(args))
@@ -537,20 +533,18 @@ def softmax_attrs_to_dict(attrs: ir.DictAttrs) -> dict:
     return res
 
 def infer_struct_info_qnn_softmax_op(call: relax.Call, ctx: relax.block_builder.BlockBuilder) -> relax.struct_info.StructInfo:
-    if len(call.args) != 6:
+    if len(call.args) != 5:
         raise ValueError("relax.qnn.softmax expects 6 arguments.")
 
     sinfo = get_tensors_sinfo(call.args)
 
-    beta_sinfo = sinfo[0]
-    x_sinfo = sinfo[1]
-    x_scale_sinfo = sinfo[2]
-    x_zp_sinfo = sinfo[3]
-    y_scale_sinfo = sinfo[4]
-    y_zp_sinfo = sinfo[5]
+    x_sinfo = sinfo[0]
+    x_scale_sinfo = sinfo[1]
+    x_zp_sinfo = sinfo[2]
+    y_scale_sinfo = sinfo[3]
+    y_zp_sinfo = sinfo[4]
 
-    if not (is_float(beta_sinfo.dtype) and
-            is_float(x_scale_sinfo.dtype) and
+    if not (is_float(x_scale_sinfo.dtype) and
             is_float(y_scale_sinfo.dtype)):
         raise ValueError("All scales must be float tensors.")
 
@@ -586,8 +580,7 @@ ir.register_op_attr("relax.qnn.softmax", "FPurity", True)
 ir.register_op_attr("relax.qnn.softmax", "FInferStructInfo", infer_struct_info_qnn_softmax_op)
 
 qnn_softmax_op = ir.Op.get("relax.qnn.softmax")
-qnn_softmax_op.set_num_inputs(6)
-qnn_softmax_op.add_argument("beta", "Tensor", "Reciprocal of the temperature.")
+qnn_softmax_op.set_num_inputs(5)
 qnn_softmax_op.add_argument("x", "Tensor", "Input tensor.")
 qnn_softmax_op.add_argument("x_scale", "Tensor", "Scale of the input.")
 qnn_softmax_op.add_argument("x_zero_point", "Tensor", "Zero point of the input.")
@@ -595,13 +588,12 @@ qnn_softmax_op.add_argument("y_scale", "Tensor", "Scale of the output.")
 qnn_softmax_op.add_argument("y_zero_point", "Tensor", "Zero point of the output.")
 
 def softmax(
-    beta: relax.Expr,
     x: relax.Expr, x_scale: relax.Expr, x_zero_point: relax.Expr,
     y_scale: relax.Expr, y_zero_point: relax.Expr,
     axis: int = -1,
 ) -> relax.Call:
     op = ir.Op.get("relax.qnn.softmax")
-    args = (beta, x, x_scale, x_zero_point, y_scale, y_zero_point)
+    args = (x, x_scale, x_zero_point, y_scale, y_zero_point)
     attrs = ir.make_node(
         "ir.DictAttrs",
         axis=axis,
