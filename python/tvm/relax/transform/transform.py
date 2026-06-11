@@ -2186,9 +2186,6 @@ class RewriteQDQPatterns:
                 y_zp = reshape_if_needed(y_ndim, y_zp, y_axis)
 
                 args = [x, x_s, x_zp, w, w_s, w_zp, y_s, y_zp]
-                bilinear_call = match_map[qbilinear_op]
-                if bilinear_call.op.name == "relax.matmul":
-                    args.insert(0, relax.const(1.0))
 
                 if qbilinear_dq_b in match_map:
                     b, b_s, b_zp = match_map[qbilinear_dq_b].args
@@ -2218,6 +2215,8 @@ class RewriteQDQPatterns:
                         )
 
                     args.append(b)
+
+                bilinear_call = match_map[qbilinear_op]
                 if bilinear_call.op.name == "relax.matmul":
                     op = ir.Op.get("relax.qnn.linear")
                 elif bilinear_call.op.name == "relax.nn.conv2d":
