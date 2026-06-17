@@ -86,6 +86,9 @@ from .transform import (
     SpecializePrimFuncBasedOnCallSite,
     dataflowblock_pass,
     function_pass,
+)
+
+from .qnn_transforms import (
     RewriteQDQPatternsToQNNOps,
     NormalizeQDQPatterns,
     LowerQNNOps,
