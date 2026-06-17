@@ -2154,7 +2154,7 @@ class RewriteQDQPatternsToQNNOps:
                 a_ndim = a.struct_info.ndim
                 b_axis = match_map[qadd_dq_b].attrs.axis
                 b_ndim = b.struct_info.ndim
-                c_axis = match_map[qadd_dq_b].attrs.axis
+                c_axis = match_map[qadd_q_c].attrs.axis
                 c_ndim = c.struct_info.ndim
 
                 a_s = reshape_if_needed(a_ndim, a_s, a_axis)
@@ -2193,18 +2193,19 @@ class RewriteQDQPatternsToQNNOps:
                     b_s_old = b_s.data.numpy()
                     b_zp_old = b_zp.data.numpy()
 
-                    b_s_new = x_s * w_s
+                    b_s_new = x_s.data.numpy() * w_s.data.numpy()
                     # This comparison is safe to do even in floating point since
                     # IEEE-754 binary floating point multiplication is correct
                     # up to rounding and commutative. The only catch is that the
                     # global floating point rounding mode needs to be the same
                     # as one specified by ONNX.
-                    if (b_s_old != b_s_new).any() and (b_zp_old != 0).any():
+                    if (b_s_old != b_s_new).any() or (b_zp_old != 0).any():
                         warnings.warn("requantizing bias")
                         b_old = (b.data.numpy() - b_zp_old) * b_s_old
 
-                        b_zp_new = numpy.zeros_like(b_s_new)
-                        b_new = b_old / b_s_new + b_zp_new
+                        b_new = b_old / b_s_new # + 0
+                        assert b.data.numpy().size == b_new.size, \
+                            "An unexpected broadcasting happened"
 
                         b = relax.const(
                             numpy.clip(
@@ -2306,6 +2307,9 @@ class LowerQNNOpsMutator(relax.PyExprMutator):
                 / y_s.data.numpy().astype("float64"),
                 dtype="float32"
             )
+            assert m.data.numpy().size == max(
+                x_s.data.numpy().size, w_s.data.numpy().size, y_s.data.numpy().size
+            ), "An unexpected broadcasting happened e.g. (C_out, 1, 1, 1) * (1, C_out, 1, 1) = (C_out, C_out, 1, 1)"
 
             x_ones = relax.op.ones_like(x)
             w_ones = relax.op.ones_like(w)
@@ -2326,10 +2330,10 @@ class LowerQNNOpsMutator(relax.PyExprMutator):
                 if not x_zp_all_zero and not w_zp_all_zero:
                     res += x_zp_int*w_zp_int*relax.op.nn.conv2d(x_ones, w_ones, **kwargs)
             elif op_name == "relax.qnn.linear":
-                rows, cols = 0, 1
+                rows, cols = -2, -1
                 # From "Quantization and Training of Neural Networks for Efficient
                 # Integer-Arithmetic-Only Inference"
-                n = relax.const(topi.utils.get_const_tuple(relax.get_shape_of(x))[1])
+                n = relax.const(topi.utils.get_const_tuple(relax.get_shape_of(x))[-1])
                 res = relax.op.matmul(x, w, out_dtype="int32")
                 if not x_zp_all_zero:
                     res -= x_zp_int*relax.op.sum(w.astype("int32"), axis=rows, keepdims=True)
