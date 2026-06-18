@@ -5,6 +5,7 @@ import warnings
 
 @ir.transform.module_pass(opt_level=0)
 class NormalizeQDQPatterns:
+    # FIXME: the stuff about homogeneous functions is a munch of crap in this context.
     """Let f be an homogeneous function of degree 1 i.e. for all scalars alpha
     f(alpha x) = alpha f(x), let q be the quantization function and dq be the
     dequantization function. This transform rewrites
@@ -70,22 +71,23 @@ class NormalizeQDQPatterns:
             | relax.dpl.is_op("relax.strided_slice")
             | relax.dpl.is_op("relax.take")
 
-            | relax.dpl.is_op("relax.abs")
-            | relax.dpl.is_op("relax.negative")
+            # TODO: probably works only if the zero point is left unchanged
+            # | relax.dpl.is_op("relax.abs")
+            # | relax.dpl.is_op("relax.negative")
 
             | relax.dpl.is_op("relax.vision.roi_align")
             | relax.dpl.is_op("relax.vision.roi_pool")
 
             # For reductions we have to assume -ffast-math
-            | relax.dpl.is_op("relax.max")
-            | relax.dpl.is_op("relax.min")
-            | relax.dpl.is_op("relax.mean")
-            | relax.dpl.is_op("relax.median")
-            | relax.dpl.is_op("relax.sum")
-            | relax.dpl.is_op("relax.collapse_sum_like")
-            | relax.dpl.is_op("relax.collapse_sum_to")
-            | relax.dpl.is_op("relax.cumsum")
-            | relax.dpl.is_op("relax.std")
+            # | relax.dpl.is_op("relax.max")
+            # | relax.dpl.is_op("relax.min")
+            # | relax.dpl.is_op("relax.mean")
+            # | relax.dpl.is_op("relax.median")
+            # | relax.dpl.is_op("relax.sum")
+            # | relax.dpl.is_op("relax.collapse_sum_like")
+            # | relax.dpl.is_op("relax.collapse_sum_to")
+            # | relax.dpl.is_op("relax.cumsum")
+            # | relax.dpl.is_op("relax.std")
 
             # Remember that scale is always positive
             | relax.dpl.is_op("relax.sort")
@@ -97,27 +99,21 @@ class NormalizeQDQPatterns:
             | relax.dpl.is_op("relax.argsort")
             | relax.dpl.is_op("relax.nonzero")
             | relax.dpl.is_op("relax.bucketize")
-            | relax.dpl.is_op("relax.unique")
+            # | relax.dpl.is_op("relax.unique")
             | relax.dpl.is_op("relax.shape_of")
             | relax.dpl.is_op("relax.size")
             | relax.dpl.is_op("relax.tensor_to_shape")
-            | relax.dpl.is_op("relax.isfinite")
-            | relax.dpl.is_op("relax.isinf")
-            | relax.dpl.is_op("relax.isnan")
-            | relax.dpl.is_op("relax.sign")
+            # TODO: not sure about those
+            # | relax.dpl.is_op("relax.isfinite")
+            # | relax.dpl.is_op("relax.isinf")
+            # | relax.dpl.is_op("relax.isnan")
+            # | relax.dpl.is_op("relax.sign")
 
-            | relax.dpl.is_op("relax.nn.relu")
-            | relax.dpl.is_op("relax.nn.leakyrelu")
-            | relax.dpl.is_op("relax.nn.prelu")
-
-            # This functions are excluded just because they are supposed to be
-            # at the center of the q(dq) pattern.
-            # | relax.dpl.is_op("relax.nn.adaptive_avg_pool1d")
-            # | relax.dpl.is_op("relax.nn.adaptive_avg_pool2d")
-            # | relax.dpl.is_op("relax.nn.adaptive_avg_pool3d")
-            # | relax.dpl.is_op("relax.nn.avg_pool1d")
-            # | relax.dpl.is_op("relax.nn.avg_pool2d")
-            # | relax.dpl.is_op("relax.nn.avg_pool3d")
+            # TODO: this works only if the zero point is left unchanged
+            # | relax.dpl.is_op("relax.nn.relu")
+            # TODO: not sure about those
+            # | relax.dpl.is_op("relax.nn.leakyrelu")
+            # | relax.dpl.is_op("relax.nn.prelu")
 
             | relax.dpl.is_op("relax.nn.max_pool1d")
             | relax.dpl.is_op("relax.nn.max_pool2d")
@@ -156,20 +152,25 @@ class NormalizeQDQPatterns:
                 input = match_map[dq_pattern_input]
                 middle = match_map[dq_pattern_middle]
                 output = match_map[dq_pattern_output]
-                breakpoint()
+                raise RuntimeError("Not yet implemented...")
             else:
                 assert q_pattern_output in match_map
                 input = match_map[q_pattern_input]
                 middle = match_map[q_pattern_middle]
                 output = match_map[q_pattern_output]
                 if middle.op.name == "relax.reshape":
-                    breakpoint()
-                elif middle.op.name == "permute_dims":
-                    breakpoint()
-                # We apply the quantize first
-                res = relax.Call(output.op, [input] + output.args[1:], output.attrs)
-                # and then the function
-                res = relax.Call(middle.op, [res], middle.attrs)
+                    raise RuntimeError("Not yet implemented...")
+                elif middle.op.name == "relax.permute_dims":
+                    raise RuntimeError("Not yet implemented...")
+                elif middle.op.name == "relax.nn.relu":
+                    raise RuntimeError("Not yet implemented...")
+                    res = relax.Call(output.op, [input] + list(output.args[1:]), output.attrs)
+                    zp_expr = output.args[2]
+                    out_dtype = output.attrs.out_dtype if hasattr(output.attrs, "out_dtype") else "int8"
+                    zp_cast = relax.const(zp_expr.data.numpy().astype(out_dtype))
+                    res = relax.op.maximum(res, zp_cast)
+                else:
+                    assert False
             return res
 
         for global_var, func in mod.functions.items():
@@ -505,6 +506,10 @@ class LowerQNNOpsMutator(relax.PyExprMutator):
             ):
                 raise ValueError("Per-block quantization is not supported yet")
 
+            # FIXME: Doing avg_pool with integer division truncates towards zero
+            # as opposed to the round to nearest semantics of standard quantized
+            # operations. The fix should be to lower avg_pool2d into an explicit
+            # sum followed by a fixed-point multiplication.
             m = relax.const(x_s.data.numpy()/y_s.data.numpy())
             res = relax.op.nn.avg_pool2d(
                 data=x.astype("int32"),
