@@ -1673,10 +1673,11 @@ class OperatorConverter:
                 self.dequantize(expr, tensor) for expr, tensor in zip(in_exprs, input_tensors)
             ]
             out = relax.op.concat(in_f32s, axis=concatenation_axis)
-            out = self.quantize(out, output_tensor)
 
-        # Handle fused activations
         out = self.convert_fused_activation_function(out, fused_activation_fn)
+
+        if output_tensor.qnn_params:
+            out = self.quantize(out, output_tensor)
 
         return out
 
@@ -4076,11 +4077,11 @@ class OperatorConverter:
                     )
                 out = relax.op.add(out, bias_expr)
 
+        out = self.convert_fused_activation_function(out, fused_activation_fn)
+
         # Finally if the dense is quantized. Quantize the output.
         if output_tensor.qnn_params:
             out = self.quantize(out, output_tensor)
-
-        out = self.convert_fused_activation_function(out, fused_activation_fn)
 
         # Change the output shape calculation based on keep_dim option
         if keep_num_dims:
@@ -4348,12 +4349,11 @@ class OperatorConverter:
                 )
             out = relax.op.add(out, bias_expr)
 
-        # Handle fused activation.
+        out = self.convert_fused_activation_function(out, fused_activation_fn)
+
         if output_tensor.qnn_params:
             # Quantize the float output using the output tensor's qnn params.
             out = self.quantize(out, output_tensor)
-
-        out = self.convert_fused_activation_function(out, fused_activation_fn)
         return out
 
     def convert_conv3d(self, op):
@@ -5097,15 +5097,18 @@ class OperatorConverter:
                 f"Padding format {padding} for operator Pool2D is not supported."
             )
 
+        if input_tensor.qnn_params:
+            out = self.dequantize(in_expr, input_tensor)
+        else:
+            out = in_expr
+
         if pool_type == "average":
             if input_tensor.qnn_params:
                 assert self.has_same_qnn_params(input_tensor, output_tensor), (
                     "TFLite avg_pool2dreshape requires input and output scale"
                     "and zero points to be equal"
                 )
-                out = relax.op.astype(in_expr, dtype="int32")
                 out = relax.op.nn.avg_pool2d(out, **params)
-                out = relax.op.astype(out, dtype=output_tensor_type_str)
             else:
                 out = relax.op.nn.avg_pool2d(in_expr, **params)
         elif pool_type == "max":
@@ -5130,14 +5133,14 @@ class OperatorConverter:
                 f"Operator {pool_type} pool is not supported for frontend TFLite."
             )
 
-        # Handle fused activations
+        out = self.convert_fused_activation_function(out, fused_activation_fn)
+
         if output_tensor.qnn_params:
             assert self.has_same_qnn_params(input_tensor, output_tensor), (
                 "TFLite avg_pool2dreshape requires input and output scale"
                 "and zero points to be equal"
             )
-            # out = self.quantize(out, output_tensor)
-        out = self.convert_fused_activation_function(out, fused_activation_fn)
+            out = self.quantize(out, output_tensor)
 
         return out
 
