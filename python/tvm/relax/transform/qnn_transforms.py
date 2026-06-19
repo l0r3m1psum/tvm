@@ -176,6 +176,17 @@ class NormalizeQDQPatterns:
 
         return mod
 
+def reshape_if_needed(ndim: int, const: relax.Constant, axis: int) -> relax.Constant:
+    res = const
+    shape_values = const.struct_info.shape.values
+    if shape_values:
+        if len(shape_values) != 1:
+            raise ValueError("Only vectors are supported")
+        shape = [1 for _ in range(ndim)]
+        shape[axis] = int(shape_values[0])
+        res = relax.const(const.data.numpy().reshape(shape))
+    return res
+
 @ir.transform.module_pass(opt_level=0)
 class RewriteQDQPatternsToQNNOps:
     def transform_module(self, mod, ctx):
@@ -218,24 +229,12 @@ class RewriteQDQPatternsToQNNOps:
         # removed by the first and the second one can't use it.
         pattern = qadd_q_c | qbilinear_q_y
 
-        def reshape_if_needed(ndim: int, const: relax.Constant, axis: int) -> relax.Constant:
-            res = const
-            shape_values = const.struct_info.shape.values
-            if shape_values:
-                if len(shape_values) != 1:
-                    raise ValueError("Only vectors are supported")
-                shape = [1 for _ in range(ndim)]
-                shape[axis] = int(shape_values[0])
-                res = relax.const(const.data.numpy().reshape(shape))
-            return res
-
         def rewriter(call: relax.Call, match_map: ir.Map) -> relax.Expr:
             if qadd_q_c in match_map:
                 a, a_s, a_zp = match_map[qadd_dq_a].args
                 b, b_s, b_zp = match_map[qadd_dq_b].args
                 c, c_s, c_zp = match_map[qadd_q_c].args
 
-                # TODO: reshape accordingly...
                 a_axis = match_map[qadd_dq_a].attrs.axis
                 a_ndim = a.struct_info.ndim
                 b_axis = match_map[qadd_dq_b].attrs.axis
@@ -286,7 +285,6 @@ class RewriteQDQPatternsToQNNOps:
                     # global floating point rounding mode needs to be the same
                     # as one specified by ONNX. Hence we use allclose anyway.
                     if not numpy.allclose(b_s_old, b_s_new) or (b_zp_old != 0).any():
-                        breakpoint()
                         warnings.warn("requantizing bias")
                         b_old = (b.data.numpy() - b_zp_old) * b_s_old
 
@@ -506,6 +504,8 @@ class LowerQNNOpsMutator(relax.PyExprMutator):
             # as opposed to the round to nearest semantics of standard quantized
             # operations. The fix should be to lower avg_pool2d into an explicit
             # sum followed by a fixed-point multiplication.
+            # NOTE: can be implemented as a convolution with a kernel of ones
+            # followed by a division by N (which can be fused in the multiplier)
             m = relax.const(x_s.data.numpy()/y_s.data.numpy())
             res = relax.op.nn.avg_pool2d(
                 data=x.astype("int32"),
