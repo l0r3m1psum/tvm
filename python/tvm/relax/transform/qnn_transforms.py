@@ -164,11 +164,6 @@ class NormalizeQDQPatterns:
                     raise RuntimeError("Not yet implemented...")
                 elif middle.op.name == "relax.nn.relu":
                     raise RuntimeError("Not yet implemented...")
-                    res = relax.Call(output.op, [input] + list(output.args[1:]), output.attrs)
-                    zp_expr = output.args[2]
-                    out_dtype = output.attrs.out_dtype if hasattr(output.attrs, "out_dtype") else "int8"
-                    zp_cast = relax.const(zp_expr.data.numpy().astype(out_dtype))
-                    res = relax.op.maximum(res, zp_cast)
                 else:
                     assert False
             return res
@@ -289,8 +284,9 @@ class RewriteQDQPatternsToQNNOps:
                     # IEEE-754 binary floating point multiplication is correct
                     # up to rounding and commutative. The only catch is that the
                     # global floating point rounding mode needs to be the same
-                    # as one specified by ONNX.
-                    if (b_s_old != b_s_new).any() or (b_zp_old != 0).any():
+                    # as one specified by ONNX. Hence we use allclose anyway.
+                    if not numpy.allclose(b_s_old, b_s_new) or (b_zp_old != 0).any():
+                        breakpoint()
                         warnings.warn("requantizing bias")
                         b_old = (b.data.numpy() - b_zp_old) * b_s_old
 
