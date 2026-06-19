@@ -101,6 +101,7 @@ class OperatorConverter:
             "ABS",
             "ADD",
             "ATAN2",
+            "AVERAGE_POOL_2D",
             "CEIL",
             "CONCATENATION",
             "CONV_2D",
@@ -1131,12 +1132,12 @@ class OperatorConverter:
 
         # Quantize a float value to an quantized integer value
         def quantize(x):
-            return float(round(x / scale) + zero_point)
+            return int(round(x / scale) + zero_point)
 
         # Get min/max of the output dtype. This will be used to ensure that clip a_min/a_max are not
         # beyond the dtype range.
-        qmin = float(tvm.tirx.min_value(dtype).value)
-        qmax = float(tvm.tirx.max_value(dtype).value)
+        qmin = int(tvm.tirx.min_value(dtype).value)
+        qmax = int(tvm.tirx.max_value(dtype).value)
 
         # The input expr is a quantized tensor with its scale and zero point. We calculate the
         # suitable clip off points based on these scale and zero point.
@@ -5170,9 +5171,10 @@ class OperatorConverter:
                     "TFLite avg_pool2dreshape requires input and output scale"
                     "and zero points to be equal"
                 )
-                out = relax.op.cast(in_expr, dtype="int32")
+                out = relax.op.astype(in_expr, dtype="int32")
+                # FIXME: this does not implement the round to nearest semantics
                 out = relax.op.nn.avg_pool2d(out, **params)
-                out = relax.op.cast(out, dtype=output_tensor_type_str)
+                out = relax.op.astype(out, dtype=output_tensor_type_str)
             else:
                 out = relax.op.nn.avg_pool2d(in_expr, **params)
         elif pool_type == "max":
