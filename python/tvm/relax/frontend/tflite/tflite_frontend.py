@@ -3406,14 +3406,28 @@ class OperatorConverter:
             options.Init(op_options.Bytes, op_options.Pos)
             fused_activation_fn = options.FusedActivationFunction()
 
-            out = self.convert_fused_activation_function(out, fused_activation_fn)
+            if output_tensor.qnn_params:
+                out = self.quantize(out, output_tensor)
+                output_tensor_type = output_tensor.tensor.Type()
+                output_tensor_type_str = self.get_tensor_type_str(output_tensor_type)
+
+                output_scale_val = get_scalar_from_constant(output_tensor.qnn_params["scale"])
+                output_zero_point_val = get_scalar_from_constant(output_tensor.qnn_params["zero_point"])
+                out = self.convert_qnn_fused_activation_function(
+                    expr=out,
+                    fused_activation_fn=fused_activation_fn,
+                    scale=output_scale_val,
+                    zero_point=output_zero_point_val,
+                    dtype=output_tensor_type_str,
+                )
+            else:
+                out = self.convert_fused_activation_function(out, fused_activation_fn)
 
         if input_is_quantized and not comparison_op:
             if not output_tensor.qnn_params:
                 raise tvm.error.OpAttributeInvalid(
                     "Quantized TFLite elemwise operator output must have quantization parameters"
                 )
-            out = self.quantize(out, output_tensor)
         return out
 
     def convert_add_n(self, op):
