@@ -92,6 +92,7 @@ from .qnn_transforms import (
     RewriteQDQPatternsToQNNOps,
     NormalizeQDQPatterns,
     LowerQNNOps,
+    PrintPatternsOutput,
 )
 
 from .attach_external_modules import AttachExternModules

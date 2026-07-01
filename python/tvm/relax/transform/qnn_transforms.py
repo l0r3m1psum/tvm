@@ -5,6 +5,13 @@ import warnings
 from typing import List, Tuple, Literal
 from tvm import topi
 
+from .transform import FusionPattern
+
+def cpp_round(x: numpy.typing.ArrayLike) -> numpy.ndarray:
+    """ Mimics C++ std::round by rounding half away from zero."""
+    x = numpy.asarray(x)
+    return numpy.where(x >= 0.0, numpy.floor(x + 0.5), numpy.ceil(x - 0.5))
+
 # https://github.com/google-ai-edge/LiteRT/blob/a8de8d054d684dfa917d4dd4351b9126a767e38b/tflite/kernels/internal/quantization_util.cc#L53
 def compute_fixed_point_multiplier_and_shift(
     double_multipliers: numpy.typing.ArrayLike,
@@ -24,7 +31,7 @@ def compute_fixed_point_multiplier_and_shift(
 
     assert ((0.5 <= q) & (q < 1.0)).all()
 
-    q_fixed = numpy.round(q * (1 << 31)).astype(numpy.int64)
+    q_fixed = cpp_round(q * (1 << 31)).astype(numpy.int64)
 
     adjust_mask = (q_fixed == (1 << 31))
     q_fixed[adjust_mask] //= 2
@@ -231,39 +238,60 @@ def reshape_if_needed(ndim: int, const: relax.Constant, axis: int) -> relax.Cons
         res = relax.const(const.data.numpy().reshape(shape))
     return res
 
+def make_qdq_bilinear_layer_pattern() -> FusionPattern:
+    dq_x = relax.dpl.is_op("relax.dequantize")(
+        relax.dpl.wildcard(), relax.dpl.is_const(), relax.dpl.is_const()
+    )
+    dq_w = relax.dpl.is_op("relax.dequantize")(
+        relax.dpl.wildcard(), relax.dpl.is_const(), relax.dpl.is_const()
+    )
+    dq_b = relax.dpl.is_op("relax.dequantize")(
+        relax.dpl.wildcard(), relax.dpl.is_const(), relax.dpl.is_const()
+    )
+    op = (
+        relax.dpl.is_op("relax.nn.conv2d") | relax.dpl.is_op("relax.matmul")
+    )(dq_x, dq_w)
+    bias = relax.dpl.is_op("relax.add")(op, dq_b) | op
+    q_y = relax.dpl.is_op("relax.quantize")(
+        bias, relax.dpl.is_const(), relax.dpl.is_const()
+    )
+
+    annotation_patterns = {
+        "dq_x": dq_x, "dq_w": dq_w, "dq_b": dq_b, "op": op, "bias": bias,
+        "q_y": q_y,
+    }
+
+    res = relax.transform.FusionPattern("qnn.bilinear", q_y, annotation_patterns)
+
+    return res
+
+def make_qdq_linear_operator_pattern() -> FusionPattern:
+    dq_a = relax.dpl.is_op("relax.dequantize")(
+        relax.dpl.wildcard(), relax.dpl.is_const(), relax.dpl.is_const()
+    )
+    dq_b = relax.dpl.is_op("relax.dequantize")(
+        relax.dpl.wildcard(), relax.dpl.is_const(), relax.dpl.is_const()
+    )
+    op = relax.dpl.is_op("relax.add")(dq_a, dq_b)
+    q_c = relax.dpl.is_op("relax.quantize")(
+        op, relax.dpl.is_const(), relax.dpl.is_const()
+    )
+
+    annotation_patterns = {
+        "dq_a": dq_a, "dq_b": dq_b, "op": op, "q_c": q_c,
+    }
+
+    res = relax.transform.FusionPattern("qnn.linear", q_c, annotation_patterns)
+
+    return res
+
 @ir.transform.module_pass(opt_level=0)
 class RewriteQDQPatternsToQNNOps:
     def transform_module(self, mod, ctx):
 
-        qbilinear_dq_x = relax.dpl.is_op("relax.dequantize")(
-            relax.dpl.wildcard(), relax.dpl.is_const(), relax.dpl.is_const()
-        )
-        qbilinear_dq_w = relax.dpl.is_op("relax.dequantize")(
-            relax.dpl.wildcard(), relax.dpl.is_const(), relax.dpl.is_const()
-        )
-        qbilinear_dq_b = relax.dpl.is_op("relax.dequantize")(
-            relax.dpl.wildcard(), relax.dpl.is_const(), relax.dpl.is_const()
-        )
-        qbilinear_op = (
-            relax.dpl.is_op("relax.nn.conv2d") | relax.dpl.is_op("relax.matmul")
-        )(qbilinear_dq_x, qbilinear_dq_w)
-        qbilinear_bias = relax.dpl.is_op("relax.add")(
-            qbilinear_op, qbilinear_dq_b
-        ) | qbilinear_op
-        qbilinear_q_y = relax.dpl.is_op("relax.quantize")(
-            qbilinear_bias, relax.dpl.is_const(), relax.dpl.is_const()
-        )
+        bilinear_layer_pattern = make_qdq_bilinear_layer_pattern()
 
-        qadd_dq_a = relax.dpl.is_op("relax.dequantize")(
-            relax.dpl.wildcard(), relax.dpl.is_const(), relax.dpl.is_const()
-        )
-        qadd_dq_b = relax.dpl.is_op("relax.dequantize")(
-            relax.dpl.wildcard(), relax.dpl.is_const(), relax.dpl.is_const()
-        )
-        qadd_op = relax.dpl.is_op("relax.add")(qadd_dq_a, qadd_dq_b)
-        qadd_q_c = relax.dpl.is_op("relax.quantize")(
-            qadd_op, relax.dpl.is_const(), relax.dpl.is_const()
-        )
+        linear_operator_pattern = make_qdq_linear_operator_pattern()
 
         # A single pattern must be used in this case because if this is
         # splitted in two passes of relax.dpl.rewrite_call (or using
@@ -271,19 +299,21 @@ class RewriteQDQPatternsToQNNOps:
         # are some dequantize which have out degree 2 i.e are used by more than
         # one node after. If two patterns are used the dequantize node are
         # removed by the first and the second one can't use it.
-        pattern = qadd_q_c | qbilinear_q_y
+        pattern = linear_operator_pattern.pattern | bilinear_layer_pattern.pattern
 
         def rewriter(call: relax.Call, match_map: ir.Map) -> relax.Expr:
-            if qadd_q_c in match_map:
-                a, a_s, a_zp = match_map[qadd_dq_a].args
-                b, b_s, b_zp = match_map[qadd_dq_b].args
-                c, c_s, c_zp = match_map[qadd_q_c].args
+            lin_op_annot = linear_operator_pattern.annotation_patterns
+            bilin_op_annot = bilinear_layer_pattern.annotation_patterns
+            if lin_op_annot["q_c"] in match_map:
+                a, a_s, a_zp = match_map[lin_op_annot["dq_a"]].args
+                b, b_s, b_zp = match_map[lin_op_annot["dq_b"]].args
+                c, c_s, c_zp = match_map[lin_op_annot["q_c"]].args
 
-                a_axis = match_map[qadd_dq_a].attrs.axis
+                a_axis = match_map[lin_op_annot["dq_a"]].attrs.axis
                 a_ndim = a.struct_info.ndim
-                b_axis = match_map[qadd_dq_b].attrs.axis
+                b_axis = match_map[lin_op_annot["dq_b"]].attrs.axis
                 b_ndim = b.struct_info.ndim
-                c_axis = match_map[qadd_q_c].attrs.axis
+                c_axis = match_map[lin_op_annot["q_c"]].attrs.axis
                 c_ndim = c.struct_info.ndim
 
                 a_s = reshape_if_needed(a_ndim, a_s, a_axis)
@@ -295,16 +325,16 @@ class RewriteQDQPatternsToQNNOps:
 
                 res = relax.op.qnn.add(a, a_s, a_zp, b, b_s, b_zp, c_s, c_zp)
             else:
-                assert qbilinear_q_y in match_map
-                x, x_s, x_zp = match_map[qbilinear_dq_x].args
-                w, w_s, w_zp = match_map[qbilinear_dq_w].args
-                y, y_s, y_zp = match_map[qbilinear_q_y].args
+                assert bilin_op_annot["q_y"] in match_map
+                x, x_s, x_zp = match_map[bilin_op_annot["dq_x"]].args
+                w, w_s, w_zp = match_map[bilin_op_annot["dq_w"]].args
+                y, y_s, y_zp = match_map[bilin_op_annot["q_y"]].args
 
-                x_axis = match_map[qbilinear_dq_x].attrs.axis
+                x_axis = match_map[bilin_op_annot["dq_x"]].attrs.axis
                 x_ndim = x.struct_info.ndim
-                w_axis = match_map[qbilinear_dq_w].attrs.axis
+                w_axis = match_map[bilin_op_annot["dq_w"]].attrs.axis
                 w_ndim = w.struct_info.ndim
-                y_axis = match_map[qbilinear_q_y].attrs.axis
+                y_axis = match_map[bilin_op_annot["q_y"]].attrs.axis
                 y_ndim = y.struct_info.ndim
 
                 x_s = reshape_if_needed(x_ndim, x_s, x_axis)
@@ -316,8 +346,8 @@ class RewriteQDQPatternsToQNNOps:
 
                 args = [x, x_s, x_zp, w, w_s, w_zp, y_s, y_zp]
 
-                if qbilinear_dq_b in match_map:
-                    b, b_s, b_zp = match_map[qbilinear_dq_b].args
+                if bilin_op_annot["dq_b"] in match_map:
+                    b, b_s, b_zp = match_map[bilin_op_annot["dq_b"]].args
 
                     b_s_old = b_s.data.numpy()
                     b_zp_old = b_zp.data.numpy()
@@ -346,7 +376,7 @@ class RewriteQDQPatternsToQNNOps:
 
                     args.append(b)
 
-                bilinear_call = match_map[qbilinear_op]
+                bilinear_call = match_map[bilin_op_annot["op"]]
                 if bilinear_call.op.name == "relax.matmul":
                     op = ir.Op.get("relax.qnn.linear")
                 elif bilinear_call.op.name == "relax.nn.conv2d":
@@ -718,3 +748,93 @@ class LowerQNNOps:
                 mod.update_func(global_var, updated_func)
 
         return mod
+
+@relax.expr_functor.mutator
+class DebugOutputAppender(relax.PyExprMutator):
+    def __init__(self, mod: ir.IRModule, patterns: List[relax.dpl.DFPattern]):
+        super().__init__(mod)
+        self.patterns = patterns
+        self.matched_vars = []
+        self.var2val = {}
+
+    def visit_var_binding_(self, binding: relax.VarBinding) -> None:
+        # Evaluate the binding value recursively
+        new_value = self.visit_expr(binding.value)
+
+        is_matched = False
+        for pattern in self.patterns:
+            if pattern.match(binding.value, self.var2val): # Match against original unmutated AST
+                is_matched = True
+                break
+
+        if is_matched:
+            # By using emit_output, we force the matched variable to become a standard Var
+            # rather than a DataflowVar. This correctly makes it an output of the DataflowBlock.
+            new_var = self.builder_.emit_output(new_value, name_hint=binding.var.name_hint)
+            self.matched_vars.append(new_var)
+        else:
+            # Preserve standard PyExprMutator behavior
+            if isinstance(binding.var, relax.DataflowVar):
+                new_var = self.builder_.emit(new_value, name_hint=binding.var.name_hint)
+            else:
+                new_var = self.builder_.emit_output(new_value, name_hint=binding.var.name_hint)
+
+        # Ensure subsequent uses of this var map to our new_var
+        self.set_var_remap(binding.var.vid, new_var)
+
+    # TODO: this add a visit_dataflow_block_ to look in every DataflowBlock.
+
+    def visit_function_(self, func: relax.Function) -> relax.Function:
+        self.matched_vars = []
+        self.var2val = relax.analysis.get_var2val(func)
+
+        new_body = self.visit_expr(func.body)
+
+        if not self.matched_vars:
+            return func
+
+        if isinstance(new_body, relax.SeqExpr):
+            hook_bindings = []
+
+            # NOTE: I am not sure that this is the "cleanest" way to do it.
+            for i, var in enumerate(self.matched_vars):
+                call = relax.op.print(var)
+
+                dummy_var = relax.Var(f"_debug_{var.name_hint}_{i}", relax.TupleStructInfo([]))
+                hook_bindings.append(relax.VarBinding(dummy_var, call))
+
+            debug_block = relax.BindingBlock(hook_bindings)
+
+            new_blocks = list(new_body.blocks) + [debug_block]
+            new_seq = relax.SeqExpr(new_blocks, new_body.body)
+
+            new_func = relax.Function(
+                params=func.params,
+                body=new_seq,
+                ret_struct_info=func.ret_struct_info,
+                is_pure=False, # Set to False since the print introduces side effects.
+                attrs=func.attrs
+            )
+            return new_func
+        else:
+            raise ValueError("The body of the function should be a "
+                "relax.SeqExpr instead it is a %s" % type(new_body))
+
+# TODO: this should be a class wrapped by @relax.transform.function_pass
+@ir.transform.module_pass(opt_level=0)
+class PrintPatternsOutput:
+    def __init__(self, patterns: List[relax.dpl.DFPattern]):
+        self.patterns = patterns
+
+    def transform_module(self, mod: ir.IRModule, ctx: ir.transform.PassContext) -> ir.IRModule:
+        appender = DebugOutputAppender(mod, self.patterns)
+
+        new_funcs = {}
+        for gv, func in mod.functions.items():
+            if isinstance(func, relax.Function):
+                new_funcs[gv] = appender.visit_expr(func)
+
+        new_mod = mod.clone()
+        new_mod.update(new_funcs)
+
+        return new_mod
