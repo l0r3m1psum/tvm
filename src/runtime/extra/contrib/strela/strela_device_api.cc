@@ -3,15 +3,13 @@
 #include <tvm/runtime/tensor.h>
 #include <tvm/ffi/reflection/registry.h>
 #include <tvm/ffi/function.h>
-#include "../../workspace_pool.h"
+#include "../../../workspace_pool.h"
 
 #include <dlpack/dlpack.h>
 
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
-
-#include "strela.h"
 
 #define PRINT do { LOG(INFO) << __func__; } while (0)
 
@@ -48,6 +46,10 @@ static size_t
 ceil_div(size_t x, size_t y) {
   return x == 0 ? 0 : 1 + ((x - 1) / y);
 }
+
+// NOTE(Diego): this is certainly the wrong way of doing this...
+#ifdef TVM_GRAPH_EXECUTOR_STRELA
+#include "strela.h"
 
 namespace tvm {
 namespace runtime {
@@ -232,6 +234,7 @@ TVM_FFI_STATIC_INIT_BLOCK() {
 
 }  // namespace runtime
 }  // namespace tvm
+#endif // TVM_GRAPH_EXECUTOR_STRELA
 
 extern "C" {
 TVM_DLL void my_func(double *x, double *y, size_t len);

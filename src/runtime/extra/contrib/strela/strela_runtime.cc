@@ -19,6 +19,7 @@
 #include "../json/json_node.h"
 #include "../json/json_runtime.h"
 
+#ifdef TVM_GRAPH_EXECUTOR_STRELA
 #include "strela.h"
 
 static const uint32_t relu_kernel[STRELA_KERNEL_SIZE] = {
@@ -42,6 +43,7 @@ static const uint32_t relu_kernel[STRELA_KERNEL_SIZE] = {
   0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, // 7
   0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, // 3
 };
+#endif
 
 namespace tvm {
 namespace runtime {
@@ -68,17 +70,18 @@ class STRELARuntime : public JSONRuntimeBase {
 
     LOG(INFO) << "Initialization";
 
+    AnalyzeGraphForOptimization();
+  }
+
+  void Run() override {
+#ifdef TVM_GRAPH_EXECUTOR_STRELA
     unsigned which = 0;
-    dev = strela_dev_init(which);
+    strela_dev *dev = strela_dev_init(which);
     if (!strela_dev_ok(dev)) {
       LOG(FATAL) << "Unable to initialized STRELA device " << which
         << " because " << strela_dev_get_err(dev).errnum;
     }
 
-    AnalyzeGraphForOptimization();
-  }
-
-  void Run() override {
     for (size_t i = 0; i < nodes_.size(); ++i) {
       const JSONGraphNode& node = nodes_[i];
 
@@ -146,11 +149,13 @@ class STRELARuntime : public JSONRuntimeBase {
     }
 
     LOG(INFO) << "NPU execution completed";
+#else
+    TVM_FFI_THROW(InternalError) << "STRELA runtime is not enabled. "
+                                 << "Please build with USE_STRELA_RUNTIME.";
+#endif
   }
 
  private:
-  strela_dev *dev;
-
   void AnalyzeGraphForOptimization() {
     for (const JSONGraphNode& node : nodes_) {
       uint32_t num_output = node.GetNumOutput();
