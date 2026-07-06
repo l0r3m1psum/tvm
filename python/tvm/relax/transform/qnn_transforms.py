@@ -1,3 +1,19 @@
+"""The best approach for handling quantized tensors and operations on them is at
+the type system level (like MLIR does [1]). A more runtime approach can be taken
+by attaching the quantization parameters (scales and zero points) to the tensor
+data structure. In this way something like NumPy could support quantized
+ndarrays. Sadly for TVM we need a different approach.
+
+We decided to go with the Q(DQ) pattern rewrite approach i.e. a quantized
+operation is represented as the pattern of a non-quantized operation with all
+its input dequantized and all of its output quantized. This is because it is how
+this operation are often represented in formats like ONNX. Even though rewriting
+this pattern to the "proper" quantized implementation changes the semantic of
+the graph this transformations are expected for efficiency. It is a bit like
+always assuming -ffast-math. Even defining custom quantized operations we would
+often find ourselves with a mix of Q(DQ) patterns and operators.
+"""
+
 import tvm_ffi
 from tvm import ir, relax
 import numpy.typing
@@ -7,8 +23,79 @@ from tvm import topi
 
 from .transform import FusionPattern
 
+def make_qdq_2_bilinear_layer_pattern() -> FusionPattern:
+    dq_x = relax.dpl.is_op("relax.dequantize")(
+        relax.dpl.wildcard(), relax.dpl.is_const(), relax.dpl.is_const()
+    )
+    dq_w = relax.dpl.is_op("relax.dequantize")(
+        relax.dpl.wildcard(), relax.dpl.is_const(), relax.dpl.is_const()
+    )
+    dq_b = relax.dpl.is_op("relax.dequantize")(
+        relax.dpl.wildcard(), relax.dpl.is_const(), relax.dpl.is_const()
+    )
+    op = (
+        relax.dpl.is_op("relax.nn.conv2d") | relax.dpl.is_op("relax.matmul")
+    )(dq_x, dq_w)
+    bias = relax.dpl.is_op("relax.add")(op, dq_b) | op
+    q_y = relax.dpl.is_op("relax.quantize")(
+        bias, relax.dpl.is_const(), relax.dpl.is_const()
+    )
+
+    annotation_patterns = {
+        "dq_x": dq_x, "dq_w": dq_w, "dq_b": dq_b, "op": op, "bias": bias,
+        "q_y": q_y,
+    }
+
+    res = relax.transform.FusionPattern("qnn.bilinear2", q_y, annotation_patterns)
+
+    return res
+
+def make_qdq_2_linear_operator_pattern() -> FusionPattern:
+    dq_a = relax.dpl.is_op("relax.dequantize")(
+        relax.dpl.wildcard(), relax.dpl.is_const(), relax.dpl.is_const()
+    )
+    dq_b = relax.dpl.is_op("relax.dequantize")(
+        relax.dpl.wildcard(), relax.dpl.is_const(), relax.dpl.is_const()
+    )
+    # TODO: relax.concat takes as input a list of arguments, so we are sure that
+    # this changes how to match it...
+    op = (
+        relax.dpl.is_op("relax.add") | relax.dpl.is_op("relax.concat")
+    )(
+        dq_a, dq_b
+    )
+    q_c = relax.dpl.is_op("relax.quantize")(
+        op, relax.dpl.is_const(), relax.dpl.is_const()
+    )
+
+    annotation_patterns = {
+        "dq_a": dq_a, "dq_b": dq_b, "op": op, "q_c": q_c,
+    }
+
+    res = relax.transform.FusionPattern("qnn.linear2", q_c, annotation_patterns)
+
+    return res
+
+# In the single argument case there is no distinction between linear and bilinear
+def make_qdq_1_linear_operator_pattern() -> FusionPattern:
+    dq_x = relax.dpl.is_op("relax.dequantize")(
+        relax.dpl.wildcard(), relax.dpl.is_const(), relax.dpl.is_const()
+    )
+    op = relax.dpl.is_op("relax.nn.avg_pool2d")(dq_x)
+    q_y = relax.dpl.is_op("relax.quantize")(
+        op, relax.dpl.is_const(), relax.dpl.is_const()
+    )
+
+    annotation_patterns = {
+        "dq_x": dq_x, "op": op, "q_y": q_y,
+    }
+
+    res = relax.transform.FusionPattern("qnn.linear1", q_y, annotation_patterns)
+
+    return res
+
 def cpp_round(x: numpy.typing.ArrayLike) -> numpy.ndarray:
-    """ Mimics C++ std::round by rounding half away from zero."""
+    """Mimics C++ std::round by rounding half away from zero."""
     x = numpy.asarray(x)
     return numpy.where(x >= 0.0, numpy.floor(x + 0.5), numpy.ceil(x - 0.5))
 
@@ -238,60 +325,23 @@ def reshape_if_needed(ndim: int, const: relax.Constant, axis: int) -> relax.Cons
         res = relax.const(const.data.numpy().reshape(shape))
     return res
 
-def make_qdq_bilinear_layer_pattern() -> FusionPattern:
-    dq_x = relax.dpl.is_op("relax.dequantize")(
-        relax.dpl.wildcard(), relax.dpl.is_const(), relax.dpl.is_const()
-    )
-    dq_w = relax.dpl.is_op("relax.dequantize")(
-        relax.dpl.wildcard(), relax.dpl.is_const(), relax.dpl.is_const()
-    )
-    dq_b = relax.dpl.is_op("relax.dequantize")(
-        relax.dpl.wildcard(), relax.dpl.is_const(), relax.dpl.is_const()
-    )
-    op = (
-        relax.dpl.is_op("relax.nn.conv2d") | relax.dpl.is_op("relax.matmul")
-    )(dq_x, dq_w)
-    bias = relax.dpl.is_op("relax.add")(op, dq_b) | op
-    q_y = relax.dpl.is_op("relax.quantize")(
-        bias, relax.dpl.is_const(), relax.dpl.is_const()
-    )
-
-    annotation_patterns = {
-        "dq_x": dq_x, "dq_w": dq_w, "dq_b": dq_b, "op": op, "bias": bias,
-        "q_y": q_y,
-    }
-
-    res = relax.transform.FusionPattern("qnn.bilinear", q_y, annotation_patterns)
-
-    return res
-
-def make_qdq_linear_operator_pattern() -> FusionPattern:
-    dq_a = relax.dpl.is_op("relax.dequantize")(
-        relax.dpl.wildcard(), relax.dpl.is_const(), relax.dpl.is_const()
-    )
-    dq_b = relax.dpl.is_op("relax.dequantize")(
-        relax.dpl.wildcard(), relax.dpl.is_const(), relax.dpl.is_const()
-    )
-    op = relax.dpl.is_op("relax.add")(dq_a, dq_b)
-    q_c = relax.dpl.is_op("relax.quantize")(
-        op, relax.dpl.is_const(), relax.dpl.is_const()
-    )
-
-    annotation_patterns = {
-        "dq_a": dq_a, "dq_b": dq_b, "op": op, "q_c": q_c,
-    }
-
-    res = relax.transform.FusionPattern("qnn.linear", q_c, annotation_patterns)
-
-    return res
-
 @ir.transform.module_pass(opt_level=0)
-class RewriteQDQPatternsToQNNOps:
+class RewriteQDQPatternsTo:
+    """Rewrites Q(DQ) patterns to a sequence of operations that implement the
+    ONNX semantic of quantized operators (i.e. round-to-nearest with
+    scale at the end) or LiteRT semantic (i.e. integer-arithmetic-only)."""
+
+    def __init__(self, semantic: Literal["onnx", "litert"]) -> None:
+        super().__init__()
+        self.semantic = semantic
+
     def transform_module(self, mod, ctx):
 
-        bilinear_layer_pattern = make_qdq_bilinear_layer_pattern()
+        binary_bilinear_layer_pattern = make_qdq_2_bilinear_layer_pattern()
 
-        linear_operator_pattern = make_qdq_linear_operator_pattern()
+        binary_linear_operator_pattern = make_qdq_2_linear_operator_pattern()
+
+        unary_linear_operator_pattern = make_qdq_1_linear_operator_pattern()
 
         # A single pattern must be used in this case because if this is
         # splitted in two passes of relax.dpl.rewrite_call (or using
@@ -299,21 +349,22 @@ class RewriteQDQPatternsToQNNOps:
         # are some dequantize which have out degree 2 i.e are used by more than
         # one node after. If two patterns are used the dequantize node are
         # removed by the first and the second one can't use it.
-        pattern = linear_operator_pattern.pattern | bilinear_layer_pattern.pattern
+        pattern = binary_linear_operator_pattern.pattern | binary_bilinear_layer_pattern.pattern
 
         def rewriter(call: relax.Call, match_map: ir.Map) -> relax.Expr:
-            lin_op_annot = linear_operator_pattern.annotation_patterns
-            bilin_op_annot = bilinear_layer_pattern.annotation_patterns
-            if lin_op_annot["q_c"] in match_map:
-                a, a_s, a_zp = match_map[lin_op_annot["dq_a"]].args
-                b, b_s, b_zp = match_map[lin_op_annot["dq_b"]].args
-                c, c_s, c_zp = match_map[lin_op_annot["q_c"]].args
+            bin_lin_op_annot = binary_linear_operator_pattern.annotation_patterns
+            bin_bilin_op_annot = binary_bilinear_layer_pattern.annotation_patterns
+            un_lin_op_annot = unary_linear_operator_pattern.annotation_patterns
+            if bin_lin_op_annot["q_c"] in match_map:
+                a, a_s, a_zp = match_map[bin_lin_op_annot["dq_a"]].args
+                b, b_s, b_zp = match_map[bin_lin_op_annot["dq_b"]].args
+                c, c_s, c_zp = match_map[bin_lin_op_annot["q_c"]].args
 
-                a_axis = match_map[lin_op_annot["dq_a"]].attrs.axis
+                a_axis = match_map[bin_lin_op_annot["dq_a"]].attrs.axis
                 a_ndim = a.struct_info.ndim
-                b_axis = match_map[lin_op_annot["dq_b"]].attrs.axis
+                b_axis = match_map[bin_lin_op_annot["dq_b"]].attrs.axis
                 b_ndim = b.struct_info.ndim
-                c_axis = match_map[lin_op_annot["q_c"]].attrs.axis
+                c_axis = match_map[bin_lin_op_annot["q_c"]].attrs.axis
                 c_ndim = c.struct_info.ndim
 
                 a_s = reshape_if_needed(a_ndim, a_s, a_axis)
@@ -323,18 +374,103 @@ class RewriteQDQPatternsToQNNOps:
                 c_s = reshape_if_needed(c_ndim, c_s, c_axis)
                 c_zp = reshape_if_needed(c_ndim, c_zp, c_axis)
 
-                res = relax.op.qnn.add(a, a_s, a_zp, b, b_s, b_zp, c_s, c_zp)
-            else:
-                assert bilin_op_annot["q_y"] in match_map
-                x, x_s, x_zp = match_map[bilin_op_annot["dq_x"]].args
-                w, w_s, w_zp = match_map[bilin_op_annot["dq_w"]].args
-                y, y_s, y_zp = match_map[bilin_op_annot["q_y"]].args
+                # C = (A_s * (A - A_z) + B_s * (B - B_z))/C_s + C_z
+                # C = A_s/C_s * (A - A_z) + B_s/C_s * (B - B_z) + C_z
+                if self.semantic == "onnx":
+                    c_s_float = c_s.data.numpy()
+                elif self.semantic == "litert":
+                    c_s_float = c_s.data.numpy().astype(numpy.float64)
+                else:
+                    assert False
 
-                x_axis = match_map[bilin_op_annot["dq_x"]].attrs.axis
+                a_m_float = a_s.data.numpy() / c_s_float
+                b_m_float = b_s.data.numpy() / c_s_float
+
+                if self.semantic == "onnx":
+                    a_m = relax.const(a_m_float)
+                    b_m = relax.const(b_m_float)
+                elif self.semantic == "litert":
+                    a_m = relax.const(a_m_float, dtype="float64")
+                    b_m = relax.const(b_m_float, dtype="float64")
+                else:
+                    assert False
+
+                # TODO: check we are doing the same thing as LiteRT
+                # https://github.com/google-ai-edge/LiteRT/blob/da5c4aae5b2e13f41c23af44b45a205992d8a293/tflite/kernels/internal/reference/integer_ops/add.h#L104
+
+                lhs = a.astype("int32")
+                if not (a_zp.data.numpy() == 0).all():
+                    lhs -= const_astype(a_zp, "int32")
+                if self.semantic == "onnx":
+                    lhs = lhs.astype("float32")
+                    if not (a_m_float == 1).all():
+                        lhs *= a_m
+                elif self.semantic == "litert":
+                    if not (a_m_float == 1).all():
+                        m, s = compute_fixed_point_multiplier_and_shift(a_m_float)
+                        lhs = multiply_by_quantized_multiplier(lhs, m, s)
+                else:
+                    assert False
+
+                rhs = b.astype("int32")
+                if not (b_zp.data.numpy() == 0).all():
+                    rhs -= const_astype(b_zp, "int32")
+                if self.semantic == "onnx":
+                    rhs = rhs.astype("float32")
+                    if not (b_m_float == 1).all():
+                        rhs *= b_m
+                elif self.semantic == "litert":
+                    if not (b_m_float == 1).all():
+                        m, s = compute_fixed_point_multiplier_and_shift(b_m_float)
+                        rhs = multiply_by_quantized_multiplier(rhs, m, s)
+                else:
+                    assert False
+
+                res = lhs + rhs
+                if self.semantic == "onnx":
+                    res = requantize(relax.const(1.0), res, c_zp)
+                elif self.semantic == "litert":
+                    res = requantize_litert(relax.const(1.0, dtype="float64"), res, c_zp)
+                else:
+                    assert False
+            elif un_lin_op_annot["q_y"] in match_map:
+                # FIXME: Doing avg_pool with integer division truncates towards zero
+                # as opposed to the round to nearest semantics of standard quantized
+                # operations. The fix should be to lower avg_pool2d into an explicit
+                # sum followed by a fixed-point multiplication.
+                # NOTE: can be implemented as a convolution with a kernel of ones
+                # followed by a division by N (which can be fused in the multiplier)
+                x_centered = x.astype("int32") - x_zp.astype("int32")
+                res = relax.Call(
+                    ir.Op.get("relax.nn.avg_pool2d"),
+                    (x_centered,),
+                    un_lin_op_annot["op"].attrs
+                ).astype("int32")
+
+                if self.semantic == "onnx":
+                    m = relax.const(x_s.data.numpy()/y_s.data.numpy())
+                elif self.semantic == "litert":
+                    m = relax.const(x_s.data.numpy().astype("float64")/y_s.data.numpy(), dtype="float64")
+                else:
+                    assert False
+
+                if self.semantic == "onnx":
+                    res = requantize(m, res.astype("float32"), y_zp)
+                elif self.semantic == "litert":
+                    res = requantize_litert(m, res, y_zp)
+                else:
+                    assert False
+            else:
+                assert bin_bilin_op_annot["q_y"] in match_map
+                x, x_s, x_zp = match_map[bin_bilin_op_annot["dq_x"]].args
+                w, w_s, w_zp = match_map[bin_bilin_op_annot["dq_w"]].args
+                y, y_s, y_zp = match_map[bin_bilin_op_annot["q_y"]].args
+
+                x_axis = match_map[bin_bilin_op_annot["dq_x"]].attrs.axis
                 x_ndim = x.struct_info.ndim
-                w_axis = match_map[bilin_op_annot["dq_w"]].attrs.axis
+                w_axis = match_map[bin_bilin_op_annot["dq_w"]].attrs.axis
                 w_ndim = w.struct_info.ndim
-                y_axis = match_map[bilin_op_annot["q_y"]].attrs.axis
+                y_axis = match_map[bin_bilin_op_annot["q_y"]].attrs.axis
                 y_ndim = y.struct_info.ndim
 
                 x_s = reshape_if_needed(x_ndim, x_s, x_axis)
@@ -344,10 +480,8 @@ class RewriteQDQPatternsToQNNOps:
                 y_s = reshape_if_needed(y_ndim, y_s, y_axis)
                 y_zp = reshape_if_needed(y_ndim, y_zp, y_axis)
 
-                args = [x, x_s, x_zp, w, w_s, w_zp, y_s, y_zp]
-
-                if bilin_op_annot["dq_b"] in match_map:
-                    b, b_s, b_zp = match_map[bilin_op_annot["dq_b"]].args
+                if bin_bilin_op_annot["dq_b"] in match_map:
+                    b, b_s, b_zp = match_map[bin_bilin_op_annot["dq_b"]].args
 
                     b_s_old = b_s.data.numpy()
                     b_zp_old = b_zp.data.numpy()
@@ -373,17 +507,58 @@ class RewriteQDQPatternsToQNNOps:
                                 numpy.iinfo("int32").max,
                             ).astype("int32")
                         )
+                else:
+                    b = None
 
-                    args.append(b)
+                x_centered = x.astype("int32") - x_zp.astype("int32")
+                w_centered = w.astype("int32") - w_zp.astype("int32")
 
-                bilinear_call = match_map[bilin_op_annot["op"]]
-                if bilinear_call.op.name == "relax.matmul":
-                    op = ir.Op.get("relax.qnn.linear")
-                elif bilinear_call.op.name == "relax.nn.conv2d":
-                    op = ir.Op.get("relax.qnn.conv2d")
+                op_call = match_map[bin_bilin_op_annot["op"]]
+                op_name = match_map[bin_bilin_op_annot["op"]].op.name
+                if op_name == "relax.nn.conv2d":
+                    res = relax.Call(
+                        ir.Op.get("relax.nn.conv2d"),
+                        (x_centered, w_centered),
+                        op_call.attrs
+                    )
+                elif op_name == "relax.matmul":
+                    res = relax.Call(
+                        ir.Op.get("relax.matmul"),
+                        (x_centered, w_centered),
+                        op_call.attrs
+                    )
                 else:
                     assert False
-                res = relax.Call(op, args, bilinear_call.attrs)
+
+                if b:
+                    res += b
+
+                if self.semantic == "onnx":
+                    m = relax.const(
+                        (x_s.data.numpy() * w_s.data.numpy()) / y_s.data.numpy(),
+                        dtype="float32"
+                    )
+                elif self.semantic == "litert":
+                    m = relax.const(
+                        (x_s.data.numpy().astype("float64") * w_s.data.numpy()) / y_s.data.numpy(),
+                        dtype="float64"
+                    )
+                else:
+                    assert False
+
+                assert m.data.numpy().size == max(
+                    x_s.data.numpy().size, w_s.data.numpy().size, y_s.data.numpy().size
+                ), "An unexpected broadcasting happened e.g. (C_out, 1, 1, 1) * (1, C_out, 1, 1) = (C_out, C_out, 1, 1)"
+
+                if self.semantic == "onnx":
+                    res = requantize(m, res.astype("float32"), y_zp)
+                elif self.semantic == "litert":
+                    # https://github.com/google-ai-edge/LiteRT/blob/a8de8d054d684dfa917d4dd4351b9126a767e38b/tflite/kernels/internal/reference/integer_ops/conv.h#L26
+                    # https://github.com/google-ai-edge/LiteRT/blob/a8de8d054d684dfa917d4dd4351b9126a767e38b/tflite/kernels/internal/reference/integer_ops/fully_connected.h#L136
+                    res = requantize_litert(m, res, y_zp)
+                else:
+                    assert False
+
             return res
 
         for global_var, func in mod.functions.items():
@@ -393,9 +568,6 @@ class RewriteQDQPatternsToQNNOps:
                 mod.update_func(global_var, new_func)
 
         return mod
-
-def to_int_list(xs: tvm_ffi.Array) -> List[int]:
-    return [int(x) for x in xs]
 
 def is_broadcastable(*shapes) -> bool:
     try:
@@ -499,255 +671,14 @@ def requantize_litert(s: relax.Constant, x: relax.Expr, z: relax.Constant) -> re
 # which uses double rounding. Hence networks are executed with operations that
 # have different rounding modes...
 # https://github.com/google-ai-edge/LiteRT/issues/7441
-@relax.expr_functor.mutator
-class LowerQNNOpsMutator(relax.PyExprMutator):
 
-    # TODO: this should accept a parameter for simulated quantization...
-    def __init__(self, mod: ir.IRModule, semantic: Literal["onnx", "litert"]) -> None:
-        super().__init__(mod)
-        self.semantic = semantic
-
-    def visit_call_(self, call: relax.Call) -> relax.Call:
-        res = call
-        op_name = getattr(call.op, "name", "")
-        if op_name == "relax.qnn.conv2d" or op_name == "relax.qnn.linear":
-            (
-                x, x_s, x_zp,
-                w, w_s, w_zp,
-                y_s, y_zp,
-            ) = call.args[:8]
-            b = call.args[8] if len(call.args) == 9 else None
-
-            if (
-                not is_broadcastable(
-                    to_int_list(x.struct_info.shape.values),
-                    to_int_list(x_s.struct_info.shape.values),
-                    to_int_list(x_zp.struct_info.shape.values),
-                ) or not is_broadcastable(
-                    to_int_list(w.struct_info.shape.values),
-                    to_int_list(w_s.struct_info.shape.values),
-                    to_int_list(w_zp.struct_info.shape.values),
-                ) or not is_broadcastable(
-                    to_int_list(call.struct_info.shape.values),
-                    to_int_list(y_s.struct_info.shape.values),
-                    to_int_list(y_zp.struct_info.shape.values),
-                )
-            ):
-                raise ValueError("Per-block quantization is not supported yet")
-
-            x_ones = relax.op.ones_like(x)
-            w_ones = relax.op.ones_like(w)
-            x_zp_int = const_astype(x_zp, "int32")
-            w_zp_int = const_astype(w_zp, "int32")
-
-            x_zp_all_zero = (x_zp.data.numpy() == 0).all()
-            w_zp_all_zero = (w_zp.data.numpy() == 0).all()
-
-            if op_name == "relax.qnn.conv2d":
-                kwargs = relax.op.qnn.conv2d_attrs_to_dict(call.attrs)
-                kwargs["out_dtype"] = "int32"
-                res = relax.op.nn.conv2d(x, w, **kwargs)
-                if not x_zp_all_zero:
-                    res -= x_zp_int*relax.op.nn.conv2d(x_ones, w, **kwargs)
-                if not w_zp_all_zero:
-                    res -= w_zp_int*relax.op.nn.conv2d(x, w_ones, **kwargs)
-                if not x_zp_all_zero and not w_zp_all_zero:
-                    res += x_zp_int*w_zp_int*relax.op.nn.conv2d(x_ones, w_ones, **kwargs)
-            elif op_name == "relax.qnn.linear":
-                rows, cols = -2, -1
-                # From "Quantization and Training of Neural Networks for Efficient
-                # Integer-Arithmetic-Only Inference"
-                n = relax.const(topi.utils.get_const_tuple(relax.get_shape_of(x))[-1])
-                res = relax.op.matmul(x, w, out_dtype="int32")
-                if not x_zp_all_zero:
-                    res -= x_zp_int*relax.op.sum(w.astype("int32"), axis=rows, keepdims=True)
-                if not w_zp_all_zero:
-                    res -= w_zp_int*relax.op.sum(x.astype("int32"), axis=cols, keepdims=True)
-                if not x_zp_all_zero and not w_zp_all_zero:
-                    res += n*x_zp_int*w_zp_int
-            else:
-                assert False
-
-            if b:
-                res += b
-
-            if self.semantic == "onnx":
-                m = relax.const(
-                    (x_s.data.numpy() * w_s.data.numpy()) / y_s.data.numpy(),
-                    dtype="float32"
-                )
-            elif self.semantic == "litert":
-                m = relax.const(
-                    (x_s.data.numpy().astype("float64") * w_s.data.numpy()) / y_s.data.numpy(),
-                    dtype="float64"
-                )
-            else:
-                assert False
-
-            assert m.data.numpy().size == max(
-                x_s.data.numpy().size, w_s.data.numpy().size, y_s.data.numpy().size
-            ), "An unexpected broadcasting happened e.g. (C_out, 1, 1, 1) * (1, C_out, 1, 1) = (C_out, C_out, 1, 1)"
-
-            if self.semantic == "onnx":
-                res = requantize(m, res.astype("float32"), y_zp)
-            elif self.semantic == "litert":
-                # https://github.com/google-ai-edge/LiteRT/blob/a8de8d054d684dfa917d4dd4351b9126a767e38b/tflite/kernels/internal/reference/integer_ops/conv.h#L26
-                # https://github.com/google-ai-edge/LiteRT/blob/a8de8d054d684dfa917d4dd4351b9126a767e38b/tflite/kernels/internal/reference/integer_ops/fully_connected.h#L136
-                res = requantize_litert(m, res, y_zp)
-            else:
-                assert False
-        elif op_name == "relax.qnn.add":
-            (
-                a, a_s, a_zp,
-                b, b_s, b_zp,
-                c_s, c_zp,
-            ) = call.args
-
-            if (
-                not is_broadcastable(
-                    to_int_list(a.struct_info.shape.values),
-                    to_int_list(a_s.struct_info.shape.values),
-                    to_int_list(a_zp.struct_info.shape.values),
-                ) or not is_broadcastable(
-                    to_int_list(b.struct_info.shape.values),
-                    to_int_list(b_s.struct_info.shape.values),
-                    to_int_list(b_zp.struct_info.shape.values),
-                ) or not is_broadcastable(
-                    to_int_list(call.struct_info.shape.values),
-                    to_int_list(c_s.struct_info.shape.values),
-                    to_int_list(c_zp.struct_info.shape.values),
-                )
-            ):
-                raise ValueError("Per-block quantization is not supported yet")
-
-            # C = (A_s * (A - A_z) + B_s * (B - B_z))/C_s + C_z
-            # C = A_s/C_s * (A - A_z) + B_s/C_s * (B - B_z) + C_z
-            if self.semantic == "onnx":
-                c_s_float = c_s.data.numpy()
-            elif self.semantic == "litert":
-                c_s_float = c_s.data.numpy().astype(numpy.float64)
-            else:
-                assert False
-
-            a_m_float = a_s.data.numpy() / c_s_float
-            b_m_float = b_s.data.numpy() / c_s_float
-
-            if self.semantic == "onnx":
-                a_m = relax.const(a_m_float)
-                b_m = relax.const(b_m_float)
-            elif self.semantic == "litert":
-                a_m = relax.const(a_m_float, dtype="float64")
-                b_m = relax.const(b_m_float, dtype="float64")
-            else:
-                assert False
-
-            # FIXME: for addition it should do a different thing when self.semantic == "litert".
-
-            lhs = a.astype("int32")
-            if not (a_zp.data.numpy() == 0).all():
-                lhs -= const_astype(a_zp, "int32")
-            if self.semantic == "onnx":
-                lhs = lhs.astype("float32")
-                if not (a_m_float == 1).all():
-                    lhs *= a_m
-            elif self.semantic == "litert":
-                if not (a_m_float == 1).all():
-                    m, s = compute_fixed_point_multiplier_and_shift(a_m_float)
-                    lhs = multiply_by_quantized_multiplier(lhs, m, s)
-            else:
-                assert False
-
-            rhs = b.astype("int32")
-            if not (b_zp.data.numpy() == 0).all():
-                rhs -= const_astype(b_zp, "int32")
-            if self.semantic == "onnx":
-                rhs = rhs.astype("float32")
-                if not (b_m_float == 1).all():
-                    rhs *= b_m
-            elif self.semantic == "litert":
-                if not (b_m_float == 1).all():
-                    m, s = compute_fixed_point_multiplier_and_shift(b_m_float)
-                    rhs = multiply_by_quantized_multiplier(rhs, m, s)
-            else:
-                assert False
-
-            res = lhs + rhs
-            if self.semantic == "onnx":
-                res = requantize(relax.const(1.0), res, c_zp)
-            elif self.semantic == "litert":
-                res = requantize_litert(relax.const(1.0, dtype="float64"), res, c_zp)
-            else:
-                assert False
-        elif op_name == "relax.qnn.avg_pool2d":
-            (
-                x, x_s, x_zp,
-                   y_s, y_zp,
-            ) = call.args
-
-            if (
-                not is_broadcastable(
-                    to_int_list(x.struct_info.shape.values),
-                    to_int_list(x_s.struct_info.shape.values),
-                    to_int_list(x_zp.struct_info.shape.values),
-                ) or not is_broadcastable(
-                    to_int_list(call.struct_info.shape.values),
-                    to_int_list(y_s.struct_info.shape.values),
-                    to_int_list(y_zp.struct_info.shape.values),
-                )
-            ):
-                raise ValueError("Per-block quantization is not supported yet")
-
-            # FIXME: Doing avg_pool with integer division truncates towards zero
-            # as opposed to the round to nearest semantics of standard quantized
-            # operations. The fix should be to lower avg_pool2d into an explicit
-            # sum followed by a fixed-point multiplication.
-            # NOTE: can be implemented as a convolution with a kernel of ones
-            # followed by a division by N (which can be fused in the multiplier)
-            res = relax.op.nn.avg_pool2d(
-                data=x.astype("int32"),
-                **relax.op.qnn.avg_pool2d_attrs_to_dict(call.attrs)
-            ).astype("int32")
-            if (x_zp.data.numpy() != 0).any():
-                res -= const_astype(x_zp, "int32")
-
-            if self.semantic == "onnx":
-                m = relax.const(x_s.data.numpy()/y_s.data.numpy())
-            elif self.semantic == "litert":
-                m = relax.const(x_s.data.numpy().astype("float64")/y_s.data.numpy(), dtype="float64")
-            else:
-                assert False
-
-            if self.semantic == "onnx":
-                res = requantize(m, res.astype("float32"), y_zp)
-            elif self.semantic == "litert":
-                res = requantize_litert(m, res, y_zp)
-            else:
-                assert False
-        if res is call:
-            res = super().visit_call_(call)
-
-        return res
-
-@ir.transform.module_pass(opt_level=0)
-class LowerQNNOps:
-    """Lowers quantized operators to a sequence of operations that implement the
-    ONNX semantic of quantized operators (i.e. round-to-nearest with
-    scale at the end) or LiteRT semantic (i.e. integer-arithmetic-only)."""
-
-    def __init__(self, semantic: Literal["onnx", "litert"]) -> None:
-        super().__init__()
-        self.semantic = semantic
-
-    def transform_module(self, mod: ir.IRModule, _ctx: ir.transform.PassContext) -> ir.IRModule:
-        mutator = LowerQNNOpsMutator(mod, self.semantic)
-
-        for global_var, func in mod.functions.items():
-            if isinstance(func, relax.Function):
-                updated_func = mutator.visit_expr(func)
-                updated_func = relax.analysis.remove_all_unused(updated_func)
-                mod.update_func(global_var, updated_func)
-
-        return mod
+################################################################################
+# TODO: RewriteCenteredBilinearProduct
+# On certain accelerators (e.g. VTA) up-casting the input and weight tensor to
+# int32 to center the makes the matrix multiplication unit unusable, hence we
+# need to expand the factored expression simplifying when zero points are null
+# since constant folding in TVM can't.
+################################################################################
 
 @relax.expr_functor.mutator
 class DebugOutputAppender(relax.PyExprMutator):

@@ -84,6 +84,10 @@ def centered_biliear_product_pattern() -> FusionPattern:
         "strela.centered_biliear_product", pattern, annotations, _check_always_ok
     )
 
+# This should match operations like addition and concatenation
+# C = A_s/C_s * (A - A_z) + B_s/C_s * (B - B_z)
+def centered_scaled_liear_sum_pattern() -> FusionPattern:
+    raise RuntimeError("Not implemented yet!")
 
 register_patterns(
     [

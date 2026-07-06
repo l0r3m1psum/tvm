@@ -89,9 +89,8 @@ from .transform import (
 )
 
 from .qnn_transforms import (
-    RewriteQDQPatternsToQNNOps,
+    RewriteQDQPatternsTo,
     NormalizeQDQPatterns,
-    LowerQNNOps,
     PrintPatternsOutput,
 )
 
