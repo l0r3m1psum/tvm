@@ -1,55 +1,25 @@
+#include "strela.h"
+
+#include <tvm/ffi/function.h>
+#include <tvm/ffi/reflection/registry.h>
 #include <tvm/runtime/device_api.h>
 #include <tvm/runtime/logging.h>
 #include <tvm/runtime/tensor.h>
-#include <tvm/ffi/reflection/registry.h>
-#include <tvm/ffi/function.h>
-#include "../../../workspace_pool.h"
+
+#include "../../../../runtime/workspace_pool.h"
 
 #include <dlpack/dlpack.h>
 
 #include <cstdlib>
 #include <cstring>
-#include <iostream>
 
 #define PRINT do { LOG(INFO) << __func__; } while (0)
-
-#if defined(_WIN32) || defined(__CYGWIN__)
-  #include <malloc.h>
-#else
-  #include <stdlib.h>
-
-  static void *
-  _aligned_malloc(size_t size, size_t alignment) {
-    void *ptr = NULL;
-
-    // posix_memalign requires the alignment to be a power of 2 and a multiple
-    // of sizeof (void*).
-    size_t new_alignment = sizeof (void*);
-    while (new_alignment < alignment) {
-      new_alignment <<= 1;
-    }
-
-    if (posix_memalign(&ptr, new_alignment, size) != 0) {
-      ptr = NULL; // This should not be necessary but we do it just in case.
-    }
-    return ptr;
-  }
-
-  static void
-  _aligned_free(void* ptr) {
-    free(ptr);
-  }
-#endif
 
 // https://stackoverflow.com/questions/2745074/fast-ceiling-of-an-integer-division-in-c-c#comment73511086_2745086
 static size_t
 ceil_div(size_t x, size_t y) {
   return x == 0 ? 0 : 1 + ((x - 1) / y);
 }
-
-// NOTE(Diego): this is certainly the wrong way of doing this...
-#ifdef TVM_GRAPH_EXECUTOR_STRELA
-#include "strela.h"
 
 namespace tvm {
 namespace runtime {
@@ -198,16 +168,12 @@ void MyDeviceAPI::FreeWorkspace(Device dev, void* data) {
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
   refl::GlobalDef()
-  .def_packed(
-    "device_api.ext_dev",
-    [](ffi::PackedArgs args, ffi::Any* rv) {
+    .def_packed("device_api.ext_dev", [](ffi::PackedArgs args, ffi::Any* rv) {
+      PRINT;
       DeviceAPI* ptr = MyDeviceAPI::Global();
       *rv = static_cast<void*>(ptr);
-    }
-  )
-  .def(
-    "ext_dev.zero_copy_cpu_view",
-    [](Tensor ext_array) -> Tensor {
+    })
+    .def("runtime.zero_copy_cpu_view", [](Tensor ext_array) -> Tensor {
       // NOTE: LLM generated, not user if this works correctly.
 
       // 1. Copy the DLTensor struct from the accelerator array
@@ -228,13 +194,11 @@ TVM_FFI_STATIC_INIT_BLOCK() {
       };
 
       return Tensor::FromDLPack(managed);
-    }
-  );
+    });
 }
 
 }  // namespace runtime
 }  // namespace tvm
-#endif // TVM_GRAPH_EXECUTOR_STRELA
 
 extern "C" {
 TVM_DLL void my_func(double *x, double *y, size_t len);
