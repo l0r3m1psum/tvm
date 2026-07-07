@@ -16,22 +16,30 @@ endif()
 if(USE_STRELA_RUNTIME)
     message(STATUS "Build with STRELA runtime")
 
-    # TODO: this should be handled by something find_library/find_path
-    if(NOT DEFINED STRELA_INCLUDE_DIR)
-        message(FATAL_ERROR "STRELA_INCLUDE_DIR is not defined. Please provide the path to the STRELA headers.")
+    if(IS_DIRECTORY ${USE_STRELA_RUNTIME})
+        set(STRELA_ROOT_DIR ${USE_STRELA_RUNTIME})
+        message(STATUS "Using custom STRELA path: ${STRELA_ROOT_DIR}")
+    elseif(DEFINED ENV{STRELA_HOME})
+        set(STRELA_ROOT_DIR $ENV{STRELA_HOME})
     endif()
 
-    if(NOT DEFINED STRELA_LIB_DIR)
-        message(FATAL_ERROR "STRELA_LIB_DIR is not defined. Please provide the path to the STRELA library directory.")
+    find_path(STRELA_INCLUDE_DIR NAMES strela.h HINTS ${STRELA_ROOT_DIR} PATH_SUFFIXES include)
+    find_library(STRELA_LIBRARY NAMES strela HINTS ${STRELA_ROOT_DIR} PATH_SUFFIXES lib)
+
+    include(FindPackageHandleStandardArgs)
+    find_package_handle_standard_args(STRELA DEFAULT_MSG STRELA_INCLUDE_DIR STRELA_LIBRARY)
+
+    if(NOT STRELA_FOUND)
+        message(FATAL_ERROR "Could not find STRELA. Please set USE_STRELA_RUNTIME to the installation directory or set the STRELA_HOME environment variable.")
     endif()
 
     tvm_file_glob(GLOB RUNTIME_STRELA_SRCS src/runtime/extra/contrib/strela/*.cc)
     add_library(tvm_strela_objs OBJECT ${RUNTIME_STRELA_SRCS})
-    target_include_directories(tvm_strela_objs PRIVATE ${STRELA_INCLUDE_DIR})
-    target_link_directories(tvm_strela_objs PRIVATE ${STRELA_LIB_DIR})
-    target_link_libraries(tvm_strela_objs PRIVATE tvm_runtime_extra_defs strela)
 
-    target_link_libraries(tvm_runtime_extra PRIVATE tvm_strela_objs)
+    target_include_directories(tvm_strela_objs PRIVATE ${STRELA_INCLUDE_DIR})
+    target_link_libraries(tvm_strela_objs PRIVATE tvm_runtime_extra_defs)
+
+    target_link_libraries(tvm_runtime_extra PRIVATE tvm_strela_objs ${STRELA_LIBRARY})
 
     add_definitions(-DTVM_GRAPH_EXECUTOR_STRELA)
 endif()
