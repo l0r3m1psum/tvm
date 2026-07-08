@@ -41,23 +41,12 @@ if(USE_STRELA_RUNTIME)
 
     target_link_libraries(tvm_runtime_extra PRIVATE tvm_strela_objs ${STRELA_LIBRARY})
 
-    # FIXME: This part is a slight adaptation from what happens in CUDA.cmake
-    # but for some reason the ext_dev is not registered by TVM-FFI...
+    # NOTE: if this is not put in the COMPILER_SRCS the ext_dev is not registered...
 
     tvm_file_glob(GLOB BACKEND_RUNTIME_STRELA_SRCS src/backend/contrib/strela/runtime/*.cc)
-
-    add_library(tvm_runtime_strela_objs OBJECT ${BACKEND_RUNTIME_STRELA_SRCS})
-    target_include_directories(tvm_runtime_strela_objs PRIVATE ${STRELA_INCLUDE_DIR})
-    target_link_libraries(tvm_runtime_strela_objs PUBLIC tvm_ffi_header)
-    target_compile_definitions(tvm_runtime_strela_objs PRIVATE TVM_RUNTIME_EXPORTS TVM_FFI_EXPORTS)
-    set_target_properties(tvm_runtime_strela_objs PROPERTIES POSITION_INDEPENDENT_CODE ON)
-    if(TVM_VISIBILITY_FLAG)
-      target_compile_options(tvm_runtime_strela_objs PRIVATE "${TVM_VISIBILITY_FLAG}")
-    endif()
-    add_library(tvm_runtime_strela SHARED $<TARGET_OBJECTS:tvm_runtime_strela_objs>)
-    list(APPEND TVM_RUNTIME_BACKEND_LIBS tvm_runtime_strela)
-    target_link_libraries(tvm_runtime_strela PUBLIC tvm_runtime ${STRELA_LIBRARY})
-    tvm_configure_target_library(tvm_runtime_strela RUNTIME_MODULE)
+    list(APPEND COMPILER_SRCS ${BACKEND_RUNTIME_STRELA_SRCS})
+    include_directories(${STRELA_INCLUDE_DIR})
+    link_libraries(${STRELA_LIBRARY})
 
     add_definitions(-DTVM_GRAPH_EXECUTOR_STRELA)
 endif()
