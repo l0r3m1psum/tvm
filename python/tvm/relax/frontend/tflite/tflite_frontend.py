@@ -7940,8 +7940,10 @@ def get_scalar_from_constant(expr):
         "Expr is not a constant scalar."
     )
     value = expr.data.numpy()
-    assert value.dtype == np.dtype(np.int32) or value.dtype == np.dtype(np.float32), (
-        "value must be float32/int32"
+    assert (value.dtype == np.dtype(np.int32)
+        or value.dtype == np.dtype(np.float32)
+        or value.dtype == np.dtype(np.int8)), (
+        "value must be float32/int32/int8"
     )
     return value.item(0)
 
