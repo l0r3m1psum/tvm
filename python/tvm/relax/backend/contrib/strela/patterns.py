@@ -70,6 +70,13 @@ def centered_biliear_product_pattern() -> FusionPattern:
     #     _relax_(matmul|nn_conv2d|multiply)
     # Notice that the first "astype astype subtract" is the one of the input
     # and the second one is the one of the weight.
+    # Due to graph homomorphism the we could match a homomorphic version of the
+    # pattern e.g.
+    # i = z.astype("int32")
+    # c = i - i
+    # y = matmul(c, c)
+    # and the name the fused operation would change...
+
 
     annotations = {
         "weight": weight,
