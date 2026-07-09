@@ -985,7 +985,7 @@ class OperatorConverter:
                 if is_qnn_params_valid:
                     qnn_params = dict()
                     qnn_params["scale"] = relax.const(scale, "float32")
-                    qnn_params["zero_point"] = relax.const(zero_point, "int32")
+                    qnn_params["zero_point"] = relax.const(zero_point, "int8")
                     qnn_params["axis"] = int(tflite_qnn_params.QuantizedDimension())
             return_list.append(TensorWrapper(tensor_idx, tensor, buffer, qnn_params))
         return return_list
@@ -4130,7 +4130,7 @@ class OperatorConverter:
                     bias_expr = relax.op.dequantize(
                         bias_expr,
                         scale=bias_scale,
-                        zero_point=relax.const(0, "int32"),
+                        zero_point=relax.const(0, "int8"),
                         axis=0,
                     )
                 out = relax.op.add(out, bias_expr)
@@ -4414,7 +4414,7 @@ class OperatorConverter:
                         input_tensor.qnn_params["scale"],
                         weight_tensor.qnn_params["scale"],
                     ),
-                    zero_point=relax.const(0, "int32"),
+                    zero_point=relax.const(0, "int8"),
                     axis=0,
                 )
             out = relax.op.add(out, bias_expr)
@@ -6839,7 +6839,7 @@ class OperatorConverter:
                 bias_expr = relax.op.dequantize(
                     bias_expr,
                     scale=bias_scale,
-                    zero_point=relax.const(0, "int32"),
+                    zero_point=relax.const(0, "int8"),
                     axis=0,
                 )
             out = relax.op.add(out, bias_expr)
