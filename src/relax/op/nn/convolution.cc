@@ -25,6 +25,7 @@
 #include "convolution.h"
 
 #include <tvm/ffi/cast.h>
+#include <tvm/ffi/extra/visit_error_context.h>
 #include <tvm/ffi/reflection/registry.h>
 
 #include <vector>
@@ -106,21 +107,20 @@ StructInfo InferStructInfoConv1d(const Call& call, const BlockBuilder& ctx) {
   PrimExpr input_channel_data = data_NCW_shape[1];
   PrimExpr input_channel_kernel = weight_OIW_shape[1];
   if (analyzer->CanProve(input_channel_data != input_channel_kernel * attrs->groups)) {
-    ctx->ReportFatal(
-        Diagnostic::Error(call)
+    TVM_FFI_VISIT_THROW(ValueError, call)
         << "The channel size of the data should equal to the product of input channel size of the "
            "weight and the number of groups. However, the data channel size is "
         << input_channel_data << " while the weight input channel size and number of groups are "
-        << input_channel_kernel << " and " << attrs->groups);
+        << input_channel_kernel << " and " << attrs->groups;
   } else if (!analyzer->CanProveEqual(input_channel_data, input_channel_kernel * attrs->groups)) {
     // Todo(relax-team): Trust the input shape at this moment, and revisit
     // this condition with runtime shape check
   }
   if (analyzer->CanProve(floormod(weight_OIW_shape[0], attrs->groups) != 0)) {
-    ctx->ReportFatal(Diagnostic::Error(call)
-                     << "Conv1d expects the number of output channels to be divisible by the "
-                        "number of groups. However, the number of output channels is "
-                     << weight_OIW_shape[0] << " while the number of groups is " << attrs->groups);
+    TVM_FFI_VISIT_THROW(ValueError, call)
+        << "Conv1d expects the number of output channels to be divisible by the "
+           "number of groups. However, the number of output channels is "
+        << weight_OIW_shape[0] << " while the number of groups is " << attrs->groups;
   } else if (!analyzer->CanProveEqual(floormod(weight_OIW_shape[0], attrs->groups), 0)) {
     // Todo(relax-team): Trust the input shape at this moment, and revisit
     // this condition with runtime shape check
@@ -128,8 +128,7 @@ StructInfo InferStructInfoConv1d(const Call& call, const BlockBuilder& ctx) {
 
   PrimExpr input_w = data_NCW_shape[2];
   PrimExpr kernel_w = weight_OIW_shape[2];
-  PrimExpr padding_w =
-      IntImm(DataType::Int(32), attrs->padding[0]) + IntImm(DataType::Int(32), attrs->padding[1]);
+  PrimExpr padding_w = IntImm::Int32(attrs->padding[0]) + IntImm::Int32(attrs->padding[1]);
 
   std::vector<PrimExpr> out_NCW_shape;
   out_NCW_shape.resize(3);
@@ -137,9 +136,9 @@ StructInfo InferStructInfoConv1d(const Call& call, const BlockBuilder& ctx) {
   out_NCW_shape[1] = weight_OIW_shape[0];
 
   PrimExpr numerator_w =
-      input_w + padding_w - IntImm(DataType::Int(32), attrs->dilation[0]) * (kernel_w - 1) - 1;
+      input_w + padding_w - IntImm::Int32(attrs->dilation[0]) * (kernel_w - 1) - 1;
   out_NCW_shape[2] =
-      analyzer->Simplify(floordiv(numerator_w, IntImm(DataType::Int(32), attrs->strides[0])) + 1);
+      analyzer->Simplify(floordiv(numerator_w, IntImm::Int32(attrs->strides[0])) + 1);
 
   ffi::Array<PrimExpr> out_shape = out2NCW.BackwardShape(out_NCW_shape);
   return TensorStructInfo(ShapeExpr(out_shape), out_dtype, vdevice);
@@ -278,21 +277,20 @@ StructInfo InferStructInfoConv2d(const Call& call, const BlockBuilder& ctx) {
   PrimExpr input_channel_data = data_NCHW_shape[1];
   PrimExpr input_channel_kernel = weight_OIHW_shape[1];
   if (analyzer->CanProve(input_channel_data != input_channel_kernel * attrs->groups)) {
-    ctx->ReportFatal(
-        Diagnostic::Error(call)
+    TVM_FFI_VISIT_THROW(ValueError, call)
         << "The channel size of the data should equal to the product of input channel size of the "
            "weight and the number of groups. However, the data channel size is "
         << input_channel_data << " while the weight input channel size and number of groups are "
-        << input_channel_kernel << " and " << attrs->groups);
+        << input_channel_kernel << " and " << attrs->groups;
   } else if (!analyzer->CanProveEqual(input_channel_data, input_channel_kernel * attrs->groups)) {
     // Todo(relax-team): Trust the input shape at this moment, and revisit
     // this condition with runtime shape check
   }
   if (analyzer->CanProve(floormod(weight_OIHW_shape[0], attrs->groups) != 0)) {
-    ctx->ReportFatal(Diagnostic::Error(call)
-                     << "Conv2d expects the number of output channels to be divisible by the "
-                        "number of groups. However, the number of output channels is "
-                     << weight_OIHW_shape[0] << " while the number of groups is " << attrs->groups);
+    TVM_FFI_VISIT_THROW(ValueError, call)
+        << "Conv2d expects the number of output channels to be divisible by the "
+           "number of groups. However, the number of output channels is "
+        << weight_OIHW_shape[0] << " while the number of groups is " << attrs->groups;
   } else if (!analyzer->CanProveEqual(floormod(weight_OIHW_shape[0], attrs->groups), 0)) {
     // Todo(relax-team): Trust the input shape at this moment, and revisit
     // this condition with runtime shape check
@@ -302,10 +300,8 @@ StructInfo InferStructInfoConv2d(const Call& call, const BlockBuilder& ctx) {
   PrimExpr input_w = data_NCHW_shape[3];
   PrimExpr kernel_h = weight_OIHW_shape[2];
   PrimExpr kernel_w = weight_OIHW_shape[3];
-  PrimExpr padding_h =
-      IntImm(DataType::Int(32), attrs->padding[0]) + IntImm(DataType::Int(32), attrs->padding[2]);
-  PrimExpr padding_w =
-      IntImm(DataType::Int(32), attrs->padding[1]) + IntImm(DataType::Int(32), attrs->padding[3]);
+  PrimExpr padding_h = IntImm::Int32(attrs->padding[0]) + IntImm::Int32(attrs->padding[2]);
+  PrimExpr padding_w = IntImm::Int32(attrs->padding[1]) + IntImm::Int32(attrs->padding[3]);
 
   std::vector<PrimExpr> out_NCHW_shape;
   out_NCHW_shape.resize(4);
@@ -313,13 +309,13 @@ StructInfo InferStructInfoConv2d(const Call& call, const BlockBuilder& ctx) {
   out_NCHW_shape[1] = weight_OIHW_shape[0];
 
   PrimExpr numerator_h =
-      input_h + padding_h - IntImm(DataType::Int(32), attrs->dilation[0]) * (kernel_h - 1) - 1;
+      input_h + padding_h - IntImm::Int32(attrs->dilation[0]) * (kernel_h - 1) - 1;
   PrimExpr numerator_w =
-      input_w + padding_w - IntImm(DataType::Int(32), attrs->dilation[1]) * (kernel_w - 1) - 1;
+      input_w + padding_w - IntImm::Int32(attrs->dilation[1]) * (kernel_w - 1) - 1;
   out_NCHW_shape[2] =
-      analyzer->Simplify(floordiv(numerator_h, IntImm(DataType::Int(32), attrs->strides[0])) + 1);
+      analyzer->Simplify(floordiv(numerator_h, IntImm::Int32(attrs->strides[0])) + 1);
   out_NCHW_shape[3] =
-      analyzer->Simplify(floordiv(numerator_w, IntImm(DataType::Int(32), attrs->strides[1])) + 1);
+      analyzer->Simplify(floordiv(numerator_w, IntImm::Int32(attrs->strides[1])) + 1);
 
   ffi::Array<PrimExpr> out_shape = out2NCHW.BackwardShape(out_NCHW_shape);
   return TensorStructInfo(ShapeExpr(out_shape), out_dtype, vdevice);
@@ -494,22 +490,20 @@ StructInfo InferStructInfoConv3d(const Call& call, const BlockBuilder& ctx) {
   PrimExpr input_channel_data = data_NCDHW_shape[1];
   PrimExpr input_channel_kernel = weight_OIDHW_shape[1];
   if (analyzer->CanProve(input_channel_data != input_channel_kernel * attrs->groups)) {
-    ctx->ReportFatal(
-        Diagnostic::Error(call)
+    TVM_FFI_VISIT_THROW(ValueError, call)
         << "The channel size of the data should equal to the product of input channel size of the "
            "weight and the number of groups. However, the data channel size is "
         << input_channel_data << " while the weight input channel size and number of groups are "
-        << input_channel_kernel << " and " << attrs->groups);
+        << input_channel_kernel << " and " << attrs->groups;
   } else if (!analyzer->CanProveEqual(input_channel_data, input_channel_kernel * attrs->groups)) {
     // Todo(relax-team): Trust the input shape at this moment, and revisit
     // this condition with runtime shape check
   }
   if (analyzer->CanProve(floormod(weight_OIDHW_shape[0], attrs->groups) != 0)) {
-    ctx->ReportFatal(Diagnostic::Error(call)
-                     << "Conv3d expects the number of output channels to be divisible by the "
-                        "number of groups. However, the number of output channels is "
-                     << weight_OIDHW_shape[0] << " while the number of groups is "
-                     << attrs->groups);
+    TVM_FFI_VISIT_THROW(ValueError, call)
+        << "Conv3d expects the number of output channels to be divisible by the "
+           "number of groups. However, the number of output channels is "
+        << weight_OIDHW_shape[0] << " while the number of groups is " << attrs->groups;
   } else if (!analyzer->CanProveEqual(floormod(weight_OIDHW_shape[0], attrs->groups), 0)) {
     // Todo(relax-team): Trust the input shape at this moment, and revisit
     // this condition with runtime shape check
@@ -521,12 +515,9 @@ StructInfo InferStructInfoConv3d(const Call& call, const BlockBuilder& ctx) {
   PrimExpr kernel_d = weight_OIDHW_shape[2];
   PrimExpr kernel_h = weight_OIDHW_shape[3];
   PrimExpr kernel_w = weight_OIDHW_shape[4];
-  PrimExpr padding_d =
-      IntImm(DataType::Int(32), attrs->padding[0]) + IntImm(DataType::Int(32), attrs->padding[3]);
-  PrimExpr padding_h =
-      IntImm(DataType::Int(32), attrs->padding[1]) + IntImm(DataType::Int(32), attrs->padding[4]);
-  PrimExpr padding_w =
-      IntImm(DataType::Int(32), attrs->padding[2]) + IntImm(DataType::Int(32), attrs->padding[5]);
+  PrimExpr padding_d = IntImm::Int32(attrs->padding[0]) + IntImm::Int32(attrs->padding[3]);
+  PrimExpr padding_h = IntImm::Int32(attrs->padding[1]) + IntImm::Int32(attrs->padding[4]);
+  PrimExpr padding_w = IntImm::Int32(attrs->padding[2]) + IntImm::Int32(attrs->padding[5]);
 
   std::vector<PrimExpr> out_NCDHW_shape;
   out_NCDHW_shape.resize(5);
@@ -534,17 +525,17 @@ StructInfo InferStructInfoConv3d(const Call& call, const BlockBuilder& ctx) {
   out_NCDHW_shape[1] = weight_OIDHW_shape[0];
 
   PrimExpr numerator_d =
-      input_d + padding_d - IntImm(DataType::Int(32), attrs->dilation[0]) * (kernel_d - 1) - 1;
+      input_d + padding_d - IntImm::Int32(attrs->dilation[0]) * (kernel_d - 1) - 1;
   PrimExpr numerator_h =
-      input_h + padding_h - IntImm(DataType::Int(32), attrs->dilation[1]) * (kernel_h - 1) - 1;
+      input_h + padding_h - IntImm::Int32(attrs->dilation[1]) * (kernel_h - 1) - 1;
   PrimExpr numerator_w =
-      input_w + padding_w - IntImm(DataType::Int(32), attrs->dilation[2]) * (kernel_w - 1) - 1;
+      input_w + padding_w - IntImm::Int32(attrs->dilation[2]) * (kernel_w - 1) - 1;
   out_NCDHW_shape[2] =
-      analyzer->Simplify(floordiv(numerator_d, IntImm(DataType::Int(32), attrs->strides[0])) + 1);
+      analyzer->Simplify(floordiv(numerator_d, IntImm::Int32(attrs->strides[0])) + 1);
   out_NCDHW_shape[3] =
-      analyzer->Simplify(floordiv(numerator_h, IntImm(DataType::Int(32), attrs->strides[1])) + 1);
+      analyzer->Simplify(floordiv(numerator_h, IntImm::Int32(attrs->strides[1])) + 1);
   out_NCDHW_shape[4] =
-      analyzer->Simplify(floordiv(numerator_w, IntImm(DataType::Int(32), attrs->strides[2])) + 1);
+      analyzer->Simplify(floordiv(numerator_w, IntImm::Int32(attrs->strides[2])) + 1);
 
   ffi::Array<PrimExpr> out_shape = out2NCDHW.BackwardShape(out_NCDHW_shape);
   return TensorStructInfo(ShapeExpr(out_shape), out_dtype, vdevice);
@@ -688,30 +679,28 @@ StructInfo InferStructInfoConv1dTranspose(const Call& call, const BlockBuilder& 
   PrimExpr input_channel_data = data_NCW_shape[1];
   PrimExpr input_channel_kernel = weight_IOW_shape[0];
   if (analyzer->CanProve(input_channel_data != input_channel_kernel)) {
-    ctx->ReportFatal(
-        Diagnostic::Error(call)
+    TVM_FFI_VISIT_THROW(ValueError, call)
         << "Conv1dTranspose expects the channel size of the data should equal to the input channel "
            "size of the weight. However, the data channel size is "
-        << input_channel_data << " while the weight input channel size is "
-        << input_channel_kernel);
+        << input_channel_data << " while the weight input channel size is " << input_channel_kernel;
   } else if (!analyzer->CanProveEqual(input_channel_data, input_channel_kernel)) {
     // Todo(relax-team): Trust the input shape at this moment, and revisit
     // this condition with runtime shape check
   }
   if (analyzer->CanProve(floormod(input_channel_kernel, attrs->groups) != 0)) {
-    ctx->ReportFatal(Diagnostic::Error(call)
-                     << "Conv1dTranspose expects the number of input channels to be divisible by "
-                        "the number of groups. However, the number of input channels is "
-                     << input_channel_kernel << " while the number of groups is " << attrs->groups);
+    TVM_FFI_VISIT_THROW(ValueError, call)
+        << "Conv1dTranspose expects the number of input channels to be divisible by "
+           "the number of groups. However, the number of input channels is "
+        << input_channel_kernel << " while the number of groups is " << attrs->groups;
   } else if (!analyzer->CanProveEqual(floormod(input_channel_kernel, attrs->groups), 0)) {
     // Todo(relax-team): Trust the input shape at this moment, and revisit
     // this condition with runtime shape check
   }
   if (attrs->output_padding[0] >= attrs->strides[0]) {
-    ctx->ReportFatal(Diagnostic::Error(call)
-                     << "Conv1dTranspose expects the output padding less than the strides, but the "
-                        "output padding is"
-                     << attrs->output_padding << " while the strides are" << attrs->strides);
+    TVM_FFI_VISIT_THROW(ValueError, call)
+        << "Conv1dTranspose expects the output padding less than the strides, but the "
+           "output padding is"
+        << attrs->output_padding << " while the strides are" << attrs->strides;
   } else if (!(attrs->output_padding[0] < attrs->strides[0])) {
     // Todo(relax-team): Trust the input padding at this moment, and revisit
     // this condition with runtime shape check
@@ -719,17 +708,16 @@ StructInfo InferStructInfoConv1dTranspose(const Call& call, const BlockBuilder& 
 
   PrimExpr input_w = data_NCW_shape[2];
   PrimExpr kernel_w = weight_IOW_shape[2];
-  PrimExpr padding_w =
-      IntImm(DataType::Int(32), attrs->padding[0]) + IntImm(DataType::Int(32), attrs->padding[1]);
+  PrimExpr padding_w = IntImm::Int32(attrs->padding[0]) + IntImm::Int32(attrs->padding[1]);
 
   std::vector<PrimExpr> out_NCW_shape;
   out_NCW_shape.resize(3);
   out_NCW_shape[0] = data_NCW_shape[0];
   out_NCW_shape[1] = weight_IOW_shape[1] * attrs->groups;
 
-  PrimExpr out_w = (input_w - 1) * IntImm(DataType::Int(32), attrs->strides[0]) - padding_w +
-                   IntImm(DataType::Int(32), attrs->dilation[0]) * (kernel_w - 1) +
-                   IntImm(DataType::Int(32), attrs->output_padding[0]) + 1;
+  PrimExpr out_w = (input_w - 1) * IntImm::Int32(attrs->strides[0]) - padding_w +
+                   IntImm::Int32(attrs->dilation[0]) * (kernel_w - 1) +
+                   IntImm::Int32(attrs->output_padding[0]) + 1;
   out_NCW_shape[2] = analyzer->Simplify(out_w);
 
   ffi::Array<PrimExpr> out_shape = out2NCW.BackwardShape(out_NCW_shape);
@@ -883,53 +871,49 @@ StructInfo InferStructInfoConv2dTranspose(const Call& call, const BlockBuilder& 
   PrimExpr input_channel_data = data_NCHW_shape[1];
   PrimExpr input_channel_kernel = weight_IOHW_shape[0];
   if (analyzer->CanProve(input_channel_data != input_channel_kernel)) {
-    ctx->ReportFatal(
-        Diagnostic::Error(call)
+    TVM_FFI_VISIT_THROW(ValueError, call)
         << "Conv2dTranspose expects the channel size of the data should equal to the input channel "
            "size of the weight. However, the data channel size is "
-        << input_channel_data << " while the weight input channel size is "
-        << input_channel_kernel);
+        << input_channel_data << " while the weight input channel size is " << input_channel_kernel;
   } else if (!analyzer->CanProveEqual(input_channel_data, input_channel_kernel)) {
     // Todo(relax-team): Trust the input shape at this moment, and revisit
     // this condition with runtime shape check
   }
   if (analyzer->CanProve(floormod(input_channel_kernel, attrs->groups) != 0)) {
-    ctx->ReportFatal(Diagnostic::Error(call)
-                     << "Conv2dTranspose expects the number of input channels to be divisible by "
-                        "the number of groups. However, the number of input channels is "
-                     << input_channel_kernel << " while the number of groups is " << attrs->groups);
+    TVM_FFI_VISIT_THROW(ValueError, call)
+        << "Conv2dTranspose expects the number of input channels to be divisible by "
+           "the number of groups. However, the number of input channels is "
+        << input_channel_kernel << " while the number of groups is " << attrs->groups;
   } else if (!analyzer->CanProveEqual(floormod(input_channel_kernel, attrs->groups), 0)) {
     // Todo(relax-team): Trust the input shape at this moment, and revisit
     // this condition with runtime shape check
   }
   if (attrs->output_padding[0] >= attrs->strides[0] ||
       attrs->output_padding[1] >= attrs->strides[1]) {
-    ctx->ReportFatal(Diagnostic::Error(call)
-                     << "Conv2dTranspose expects the output padding less than the strides, but the "
-                        "output padding is"
-                     << attrs->output_padding << " while the strides are" << attrs->strides);
+    TVM_FFI_VISIT_THROW(ValueError, call)
+        << "Conv2dTranspose expects the output padding less than the strides, but the "
+           "output padding is"
+        << attrs->output_padding << " while the strides are" << attrs->strides;
   }
 
   PrimExpr input_h = data_NCHW_shape[2];
   PrimExpr input_w = data_NCHW_shape[3];
   PrimExpr kernel_h = weight_IOHW_shape[2];
   PrimExpr kernel_w = weight_IOHW_shape[3];
-  PrimExpr padding_h =
-      IntImm(DataType::Int(32), attrs->padding[0]) + IntImm(DataType::Int(32), attrs->padding[2]);
-  PrimExpr padding_w =
-      IntImm(DataType::Int(32), attrs->padding[1]) + IntImm(DataType::Int(32), attrs->padding[3]);
+  PrimExpr padding_h = IntImm::Int32(attrs->padding[0]) + IntImm::Int32(attrs->padding[2]);
+  PrimExpr padding_w = IntImm::Int32(attrs->padding[1]) + IntImm::Int32(attrs->padding[3]);
 
   std::vector<PrimExpr> out_NCHW_shape;
   out_NCHW_shape.resize(4);
   out_NCHW_shape[0] = data_NCHW_shape[0];
   out_NCHW_shape[1] = weight_IOHW_shape[1] * attrs->groups;
 
-  PrimExpr out_h = (input_h - 1) * IntImm(DataType::Int(32), attrs->strides[0]) - padding_h +
-                   IntImm(DataType::Int(32), attrs->dilation[0]) * (kernel_h - 1) +
-                   IntImm(DataType::Int(32), attrs->output_padding[0]) + 1;
-  PrimExpr out_w = (input_w - 1) * IntImm(DataType::Int(32), attrs->strides[1]) - padding_w +
-                   IntImm(DataType::Int(32), attrs->dilation[1]) * (kernel_w - 1) +
-                   IntImm(DataType::Int(32), attrs->output_padding[1]) + 1;
+  PrimExpr out_h = (input_h - 1) * IntImm::Int32(attrs->strides[0]) - padding_h +
+                   IntImm::Int32(attrs->dilation[0]) * (kernel_h - 1) +
+                   IntImm::Int32(attrs->output_padding[0]) + 1;
+  PrimExpr out_w = (input_w - 1) * IntImm::Int32(attrs->strides[1]) - padding_w +
+                   IntImm::Int32(attrs->dilation[1]) * (kernel_w - 1) +
+                   IntImm::Int32(attrs->output_padding[1]) + 1;
   out_NCHW_shape[2] = analyzer->Simplify(out_h);
   out_NCHW_shape[3] = analyzer->Simplify(out_w);
 
@@ -1119,21 +1103,19 @@ StructInfo InferStructInfoConv3dTranspose(const Call& call, const BlockBuilder& 
   PrimExpr input_channel_data = data_NCDHW_shape[1];
   PrimExpr input_channel_kernel = weight_IODHW_shape[0];
   if (analyzer->CanProve(input_channel_data != input_channel_kernel)) {
-    ctx->ReportFatal(
-        Diagnostic::Error(call)
+    TVM_FFI_VISIT_THROW(ValueError, call)
         << "Conv3dTranspose expects the channel size of the data should equal to the input channel "
            "size of the weight. However, the data channel size is "
-        << input_channel_data << " while the weight input channel size is "
-        << input_channel_kernel);
+        << input_channel_data << " while the weight input channel size is " << input_channel_kernel;
   } else if (!analyzer->CanProveEqual(input_channel_data, input_channel_kernel)) {
     // Todo(relax-team): Trust the input shape at this moment, and revisit
     // this condition with runtime shape check
   }
   if (analyzer->CanProve(floormod(input_channel_kernel, attrs->groups) != 0)) {
-    ctx->ReportFatal(Diagnostic::Error(call)
-                     << "Conv3dTranspose expects the number of input channels to be divisible by "
-                        "the number of groups. However, the number of input channels is "
-                     << input_channel_kernel << " while the number of groups is " << attrs->groups);
+    TVM_FFI_VISIT_THROW(ValueError, call)
+        << "Conv3dTranspose expects the number of input channels to be divisible by "
+           "the number of groups. However, the number of input channels is "
+        << input_channel_kernel << " while the number of groups is " << attrs->groups;
   } else if (!analyzer->CanProveEqual(floormod(input_channel_kernel, attrs->groups), 0)) {
     // Todo(relax-team): Trust the input shape at this moment, and revisit
     // this condition with runtime shape check
@@ -1141,10 +1123,10 @@ StructInfo InferStructInfoConv3dTranspose(const Call& call, const BlockBuilder& 
   if (attrs->output_padding[0] >= attrs->strides[0] ||
       attrs->output_padding[1] >= attrs->strides[1] ||
       attrs->output_padding[2] >= attrs->strides[2]) {
-    ctx->ReportFatal(Diagnostic::Error(call)
-                     << "Conv3dTranspose expects the output padding less than the strides, but the "
-                        "output padding is"
-                     << attrs->output_padding << " while the strides are" << attrs->strides);
+    TVM_FFI_VISIT_THROW(ValueError, call)
+        << "Conv3dTranspose expects the output padding less than the strides, but the "
+           "output padding is"
+        << attrs->output_padding << " while the strides are" << attrs->strides;
   }
 
   PrimExpr input_d = data_NCDHW_shape[2];
@@ -1153,27 +1135,24 @@ StructInfo InferStructInfoConv3dTranspose(const Call& call, const BlockBuilder& 
   PrimExpr kernel_d = weight_IODHW_shape[2];
   PrimExpr kernel_h = weight_IODHW_shape[3];
   PrimExpr kernel_w = weight_IODHW_shape[4];
-  PrimExpr padding_d =
-      IntImm(DataType::Int(32), attrs->padding[0]) + IntImm(DataType::Int(32), attrs->padding[3]);
-  PrimExpr padding_h =
-      IntImm(DataType::Int(32), attrs->padding[1]) + IntImm(DataType::Int(32), attrs->padding[4]);
-  PrimExpr padding_w =
-      IntImm(DataType::Int(32), attrs->padding[2]) + IntImm(DataType::Int(32), attrs->padding[5]);
+  PrimExpr padding_d = IntImm::Int32(attrs->padding[0]) + IntImm::Int32(attrs->padding[3]);
+  PrimExpr padding_h = IntImm::Int32(attrs->padding[1]) + IntImm::Int32(attrs->padding[4]);
+  PrimExpr padding_w = IntImm::Int32(attrs->padding[2]) + IntImm::Int32(attrs->padding[5]);
 
   std::vector<PrimExpr> out_NCDHW_shape;
   out_NCDHW_shape.resize(5);
   out_NCDHW_shape[0] = data_NCDHW_shape[0];
   out_NCDHW_shape[1] = weight_IODHW_shape[1] * attrs->groups;
 
-  PrimExpr out_d = (input_d - 1) * IntImm(DataType::Int(32), attrs->strides[0]) - padding_d +
-                   IntImm(DataType::Int(32), attrs->dilation[0]) * (kernel_d - 1) +
-                   IntImm(DataType::Int(32), attrs->output_padding[0]) + 1;
-  PrimExpr out_h = (input_h - 1) * IntImm(DataType::Int(32), attrs->strides[1]) - padding_h +
-                   IntImm(DataType::Int(32), attrs->dilation[1]) * (kernel_h - 1) +
-                   IntImm(DataType::Int(32), attrs->output_padding[1]) + 1;
-  PrimExpr out_w = (input_w - 1) * IntImm(DataType::Int(32), attrs->strides[2]) - padding_w +
-                   IntImm(DataType::Int(32), attrs->dilation[2]) * (kernel_w - 1) +
-                   IntImm(DataType::Int(32), attrs->output_padding[2]) + 1;
+  PrimExpr out_d = (input_d - 1) * IntImm::Int32(attrs->strides[0]) - padding_d +
+                   IntImm::Int32(attrs->dilation[0]) * (kernel_d - 1) +
+                   IntImm::Int32(attrs->output_padding[0]) + 1;
+  PrimExpr out_h = (input_h - 1) * IntImm::Int32(attrs->strides[1]) - padding_h +
+                   IntImm::Int32(attrs->dilation[1]) * (kernel_h - 1) +
+                   IntImm::Int32(attrs->output_padding[1]) + 1;
+  PrimExpr out_w = (input_w - 1) * IntImm::Int32(attrs->strides[2]) - padding_w +
+                   IntImm::Int32(attrs->dilation[2]) * (kernel_w - 1) +
+                   IntImm::Int32(attrs->output_padding[2]) + 1;
   out_NCDHW_shape[2] = analyzer->Simplify(out_d);
   out_NCDHW_shape[3] = analyzer->Simplify(out_h);
   out_NCDHW_shape[4] = analyzer->Simplify(out_w);

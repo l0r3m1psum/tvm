@@ -24,6 +24,7 @@
  * \note Update this file when you added a new StructInfo.
  */
 #include <tvm/ffi/cast.h>
+#include <tvm/ffi/extra/visit_error_context.h>
 #include <tvm/ffi/reflection/registry.h>
 #include <tvm/relax/analysis.h>
 #include <tvm/relax/expr_functor.h>
@@ -647,97 +648,97 @@ class StructInfoBasePreconditionCollector
   PrimExpr VisitStructInfo(const StructInfo& lhs, const StructInfo& other) override {
     if (lhs.same_as(other)) {
       // Early bail-out if the StructInfo has reference equality.
-      return tirx::const_true();
+      return IntImm::Bool(true);
     } else {
       return StructInfoFunctor::VisitStructInfo(lhs, other);
     }
   }
 
   PrimExpr VisitStructInfo_(const ObjectStructInfoNode* lhs, const StructInfo& other) final {
-    return IntImm(DataType::Bool(), 1);
+    return IntImm::Bool(true);
   }
 
   PrimExpr VisitStructInfo_(const PrimStructInfoNode* lhs, const StructInfo& other) final {
     auto* rhs = other.as<PrimStructInfoNode>();
     if (rhs == nullptr) {
-      return IntImm(DataType::Bool(), 0);
+      return IntImm::Bool(false);
     }
 
     if (lhs->dtype != rhs->dtype) {
-      return IntImm(DataType::Bool(), 0);
+      return IntImm::Bool(false);
     }
 
     if (lhs->value.defined() && rhs->value.defined()) {
       return lhs->value.value() == rhs->value.value();
     } else if (lhs->value.defined() && !rhs->value.defined()) {
-      return IntImm(DataType::Bool(), 0);
+      return IntImm::Bool(false);
     } else {
-      return IntImm(DataType::Bool(), 1);
+      return IntImm::Bool(true);
     }
   }
 
   PrimExpr VisitStructInfo_(const ShapeStructInfoNode* lhs, const StructInfo& other) final {
     auto* rhs = other.as<ShapeStructInfoNode>();
     if (rhs == nullptr) {
-      return IntImm(DataType::Bool(), 0);
+      return IntImm::Bool(false);
     }
     // lhs have unknown ndim
     if (lhs->IsUnknownNdim()) {
-      return IntImm(DataType::Bool(), 1);
+      return IntImm::Bool(true);
     }
 
     // ndim must match
     if (lhs->ndim != rhs->ndim) {
-      return IntImm(DataType::Bool(), 0);
+      return IntImm::Bool(false);
     }
 
     if (lhs->values.defined() && rhs->values.defined()) {
       return ArrayCheck(lhs->values.value(), rhs->values.value());
     } else if (lhs->values.defined() && !rhs->values.defined()) {
-      return IntImm(DataType::Bool(), 0);
+      return IntImm::Bool(false);
     } else {
-      return IntImm(DataType::Bool(), 1);
+      return IntImm::Bool(true);
     }
   }
 
   PrimExpr VisitStructInfo_(const TensorStructInfoNode* lhs, const StructInfo& other) final {
     auto* rhs = other.as<TensorStructInfoNode>();
     if (rhs == nullptr) {
-      return IntImm(DataType::Bool(), 0);
+      return IntImm::Bool(false);
     }
     // dtype mismatch
     if (!lhs->IsUnknownDtype() && lhs->dtype != rhs->dtype) {
-      return IntImm(DataType::Bool(), 0);
+      return IntImm::Bool(false);
     }
 
     // ndim mismatch
     if (!lhs->IsUnknownNdim() && lhs->ndim != rhs->ndim) {
-      return IntImm(DataType::Bool(), 0);
+      return IntImm::Bool(false);
     }
 
     // vdevice mismatch
     if (lhs->vdevice.defined() && !rhs->vdevice.defined()) {
-      return IntImm(DataType::Bool(), 0);
+      return IntImm::Bool(false);
     }
     if (lhs->vdevice.defined() && rhs->vdevice.defined()) {
       VDevice lhs_vdevice = lhs->vdevice.value();
       VDevice rhs_vdevice = rhs->vdevice.value();
       if (lhs_vdevice->target.defined() && !rhs_vdevice->target.defined()) {
-        return IntImm(DataType::Bool(), 0);
+        return IntImm::Bool(false);
       }
       // mismatch in either the target, vdevice_id, or memory_scope
       if ((lhs_vdevice->target.defined() && rhs_vdevice->target.defined()) &&
           (lhs_vdevice->target != rhs_vdevice->target ||
            lhs_vdevice->vdevice_id != rhs_vdevice->vdevice_id ||
            lhs_vdevice->memory_scope != rhs_vdevice->memory_scope)) {
-        return IntImm(DataType::Bool(), 0);
+        return IntImm::Bool(false);
       }
     }
 
     if (lhs->shape.same_as(rhs->shape)) {
-      return IntImm(DataType::Bool(), 1);
+      return IntImm::Bool(true);
     } else if (lhs->shape.defined() && !rhs->shape.defined()) {
-      return IntImm(DataType::Bool(), 0);
+      return IntImm::Bool(false);
     }
 
     auto* lhs_shape = lhs->shape.as<ShapeExprNode>();
@@ -745,23 +746,23 @@ class StructInfoBasePreconditionCollector
     if (lhs_shape && rhs_shape) {
       return ArrayCheck(lhs_shape->values, rhs_shape->values);
     } else if (lhs_shape && !rhs_shape) {
-      return IntImm(DataType::Bool(), 0);
+      return IntImm::Bool(false);
     }
 
-    return IntImm(DataType::Bool(), 1);
+    return IntImm::Bool(true);
   }
 
   PrimExpr VisitStructInfo_(const distributed::DTensorStructInfoNode* lhs,
                             const StructInfo& other) final {
     auto* rhs = other.as<distributed::DTensorStructInfoNode>();
     if (rhs == nullptr) {
-      return IntImm(DataType::Bool(), 0);
+      return IntImm::Bool(false);
     }
 
     ffi::StructuralEqual struct_equal;
     if (!struct_equal(lhs->device_mesh, rhs->device_mesh) ||
         !struct_equal(lhs->placement, rhs->placement)) {
-      return IntImm(DataType::Bool(), 0);
+      return IntImm::Bool(false);
     }
 
     return this->VisitStructInfo(lhs->tensor_sinfo, rhs->tensor_sinfo);
@@ -770,7 +771,7 @@ class StructInfoBasePreconditionCollector
   PrimExpr VisitStructInfo_(const TupleStructInfoNode* lhs, const StructInfo& other) final {
     auto* rhs = other.as<TupleStructInfoNode>();
     if (rhs == nullptr) {
-      return IntImm(DataType::Bool(), 0);
+      return IntImm::Bool(false);
     }
     return ArrayCheck(lhs->fields, rhs->fields);
   }
@@ -778,19 +779,19 @@ class StructInfoBasePreconditionCollector
   PrimExpr VisitStructInfo_(const FuncStructInfoNode* lhs, const StructInfo& other) override {
     auto* rhs = other.as<FuncStructInfoNode>();
     if (rhs == nullptr) {
-      return IntImm(DataType::Bool(), 0);
+      return IntImm::Bool(false);
     }
 
     // Check purity: Pure functions are a subtype of impure functions
     if (lhs->purity && !rhs->purity) {
-      return IntImm(DataType::Bool(), 0);
+      return IntImm::Bool(false);
     }
 
     if (lhs->derive_func.defined() && !lhs->derive_func.same_as(rhs->derive_func)) {
-      return IntImm(DataType::Bool(), 0);
+      return IntImm::Bool(false);
     }
     if (lhs->params.defined() && !rhs->params.defined()) {
-      return IntImm(DataType::Bool(), 0);
+      return IntImm::Bool(false);
     }
 
     PrimExpr all_match = VisitStructInfo(lhs->ret, rhs->ret);
@@ -799,7 +800,7 @@ class StructInfoBasePreconditionCollector
     if (lhs->params.defined()) {
       param_check = ArrayCheck(lhs->params.value(), rhs->params.value());
     } else {
-      param_check = IntImm(DataType::Bool(), 1);
+      param_check = IntImm::Bool(true);
     }
 
     PrimExpr ret_check = VisitStructInfo(lhs->ret, rhs->ret);
@@ -810,10 +811,10 @@ class StructInfoBasePreconditionCollector
  private:
   PrimExpr ArrayCheck(const ffi::Array<PrimExpr>& lhs, const ffi::Array<PrimExpr>& rhs) {
     if (lhs.size() != rhs.size()) {
-      return IntImm(DataType::Bool(), 0);
+      return IntImm::Bool(false);
     }
 
-    PrimExpr all_equal = IntImm(DataType::Bool(), 1);
+    PrimExpr all_equal = IntImm::Bool(true);
     for (size_t i = 0; i < lhs.size(); i++) {
       all_equal = all_equal && (lhs[i] == rhs[i]);
     }
@@ -822,10 +823,10 @@ class StructInfoBasePreconditionCollector
 
   PrimExpr ArrayCheck(const ffi::Array<StructInfo>& lhs, const ffi::Array<StructInfo>& rhs) {
     if (lhs.size() != rhs.size()) {
-      return IntImm(DataType::Bool(), 0);
+      return IntImm::Bool(false);
     }
 
-    PrimExpr all_pass = IntImm(DataType::Bool(), 1);
+    PrimExpr all_pass = IntImm::Bool(true);
 
     for (size_t i = 0; i < lhs.size(); ++i) {
       all_pass = all_pass && VisitStructInfo(lhs[i], rhs[i]);
@@ -869,24 +870,26 @@ class CallRetStructInfoDeriver : public StructInfoBaseChecker {
     // Normal function signature derivation.
     auto params = finfo->params.value();
     if (params.size() != call->args.size()) {
-      ctx->ReportFatal(Diagnostic::Error(call->span)
-                       << "Number of arguments and parameters mismatch:"
-                       << " Function " << call->op << " has struct info " << finfo
-                       << " and accepts " << params.size() << " parameters, but was called with "
-                       << call->args.size() << " arguments (" << call->args << ")");
+      TVM_FFI_VISIT_THROW(ValueError, call)
+          << "Number of arguments and parameters mismatch:"
+          << " Function " << call->op << " has struct info " << finfo << " and accepts "
+          << params.size() << " parameters, but was called with " << call->args.size()
+          << " arguments (" << call->args << ")";
     }
     // Visit each param arg pair, check and populate the var map
     for (size_t i = 0; i < params.size(); ++i) {
+      TVM_FFI_VISIT_BEGIN();
       auto arg_sinfo = GetStructInfo(call->args[i]);
       BaseCheckResult res = this->VisitStructInfo(params[i], arg_sinfo);
       // Report error if we find L1 level failure
       // L2 level is best effort so we don't report.
       // The behavior of L2 can be customized later.
       if (res == BaseCheckResult::kFailL0 || res == BaseCheckResult::kFailL1) {
-        ctx->ReportFatal(Diagnostic::Error(call->span)
-                         << "Argument " << i << " type mismatch:"
-                         << " expected " << params[i] << ", given " << arg_sinfo);
+        TVM_FFI_VISIT_THROW(ValueError, call->args[i])
+            << "Argument " << i << " type mismatch:"
+            << " expected " << params[i] << ", given " << arg_sinfo;
       }
+      TVM_FFI_VISIT_END(call->args[i]);
     }
     // map the ret using the populated var map.
     return EraseToWellDefined(finfo->ret, shape_var_map_, var_map_);
@@ -985,6 +988,9 @@ StructInfo DeriveCallRetStructInfo(const FuncStructInfo& finfo, const Call& call
 
 StructInfo DeriveCallRetStructInfo(const FuncStructInfo& finfo, const Call& call,
                                    const BlockBuilder& ctx, const arith::Analyzer& ana) {
+  // The deriver's TVM_FFI_VISIT_THROW seeds a VisitErrorContext on the error;
+  // the outer pass wrapper catches it and enriches the message with the access
+  // path. Nothing to do here but propagate.
   return CallRetStructInfoDeriver(ana.get()).Derive(finfo, call, ctx);
 }
 

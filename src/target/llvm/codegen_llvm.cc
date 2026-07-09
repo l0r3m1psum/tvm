@@ -133,6 +133,8 @@ void CodeGenLLVM::Init(const std::string& module_name, LLVMTarget* llvm_target,
   builder_.reset(new IRBuilder(*ctx));
   module_.reset(new llvm::Module(module_name, *ctx));
   md_builder_.reset(new llvm::MDBuilder(*ctx));
+  functions_.clear();
+  function_symbol_owners_.clear();
   // types
   t_void_ = llvm::Type::getVoidTy(*ctx);
   t_void_p_ = llvmGetPointerTo(llvm::Type::getInt8Ty(*ctx), GetGlobalAddressSpace());
@@ -260,6 +262,20 @@ llvm::Function* CodeGenLLVM::DeclareFunctionInternal(const GlobalVar& gvar, cons
       llvm::FunctionType::get(GetLLVMType(func->ret_type), param_types, false);
 
   auto [symbol_name, linkage_type] = GetLinkage(gvar, func);
+  if (auto it = function_symbol_owners_.find(symbol_name); it != function_symbol_owners_.end()) {
+    constexpr const char* kFFISymbolPrefix = "__tvm_ffi_";
+    std::string user_symbol = symbol_name;
+    if (user_symbol.rfind(kFFISymbolPrefix, 0) == 0) {
+      user_symbol = user_symbol.substr(std::char_traits<char>::length(kFFISymbolPrefix));
+    }
+    TVM_FFI_THROW(InternalError) << "Duplicate PrimFunc global_symbol '" << user_symbol
+                                 << "' in LLVM codegen: IRModule keys '" << it->second << "' and '"
+                                 << gvar->name_hint << "' both lower to the same exported symbol '"
+                                 << symbol_name << "'. "
+                                 << "Each exposed PrimFunc in one IRModule must have a unique "
+                                    "global_symbol.";
+  }
+  function_symbol_owners_[symbol_name] = gvar->name_hint;
 
   auto function = module_->getFunction(MakeStringRef(symbol_name));
   if (function == nullptr) {
@@ -597,11 +613,10 @@ llvm::Type* CodeGenLLVM::GetLLVMType(const Type& type) const {
   if (auto* ptr = type.as<PrimTypeNode>()) {
     return DTypeToLLVMType(ptr->dtype);
   } else if (auto* ptr = type.as<PointerTypeNode>()) {
-    // LLVM IR doesn't allow void*, nor do we require custom datatypes
-    // to have LLVM equivalents, so we need to recognize these
-    // patterns explicitly.
+    // LLVM IR doesn't allow void*, so pointer element types that do not
+    // have an LLVM scalar equivalent need explicit handling.
     if (auto* primtype = ptr->element_type.as<PrimTypeNode>()) {
-      if (primtype->dtype.is_void() || primtype->dtype.code() >= DataType::kCustomBegin) {
+      if (primtype->dtype.is_void()) {
         return t_void_p_;
       }
     } else if (ptr->element_type->IsInstance<TensorMapTypeNode>()) {
@@ -1858,7 +1873,7 @@ llvm::Value* CodeGenLLVM::VisitExpr_(const RampNode* op) {
   int lanes = op->dtype.lanes();
   for (int i = 0; i < lanes; ++i) {
     vec = builder_->CreateInsertElement(
-        vec, MakeValue(op->base + op->stride * make_const(op->stride.dtype(), i)), ConstInt32(i));
+        vec, MakeValue(op->base + op->stride * MakeConst(op->stride.dtype(), i)), ConstInt32(i));
   }
   return vec;
 }
@@ -1944,7 +1959,7 @@ void CodeGenLLVM::VisitStmt_(const ForNode* op) {
   } else {
     TVM_FFI_ICHECK(op->kind == ForKind::kSerial);
   }
-  PrimExpr step = op->step.value_or(make_const(op->extent->dtype, 1));
+  PrimExpr step = op->step.value_or(MakeConst(op->extent->dtype, 1));
   PrimExpr end = is_zero(op->min) ? op->extent : analyzer_->Simplify(op->min + op->extent);
   llvm::Value* begin_value = MakeValue(op->min);
   llvm::Value* end_value = MakeValue(end);
@@ -2312,7 +2327,7 @@ static void CodegenLLVMRegisterReflection() {
         for (auto it = features.begin(); it != features.end(); ++it) {
           std::string name = it->getKey().str();
           bool value = it->getValue();
-          ret.Set(name, IntImm(DataType::Bool(), value));
+          ret.Set(name, IntImm::Bool(value));
         }
         return ret;
 #else
@@ -2322,7 +2337,7 @@ static void CodegenLLVMRegisterReflection() {
         for (auto it = features.begin(); it != features.end(); ++it) {
           std::string name = it->getKey().str();
           bool value = it->getValue();
-          ret.Set(name, IntImm(DataType::Bool(), value));
+          ret.Set(name, IntImm::Bool(value));
         }
         return ret;
       }

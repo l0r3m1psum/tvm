@@ -20,7 +20,7 @@ requires = ["scikit-build-core>=0.11", "setuptools-scm>=8"]
 build-backend = "scikit_build_core.build"
 
 [project]
-name = "tvm"
+name = "apache-tvm"
 # The version is derived from the most recent Git tag by setuptools_scm at build
 # time (see [tool.setuptools_scm]); no manual version stamping is required.
 dynamic = ["version"]
@@ -45,20 +45,19 @@ classifiers = [
   "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-  "apache-tvm-ffi>=0.1.11",
+  "apache-tvm-ffi>=0.1.12",
   "ml_dtypes",
   "numpy",
-  "psutil",
   "typing_extensions",
 ]
 
 [project.optional-dependencies]
-importer-onnx = ["onnx", "onnxoptimizer", "onnxruntime"]
-importer-pytorch = ["torch", "torchvision"]
-importer-tflite = ["tflite"]
-coreml = ["coremltools"]
+torch = ["torch"]
+cuda = ["cuda-bindings"]
 meta-schedule = ["xgboost"]
-all = ["xgboost"]
+popen-pool = ["psutil", "cloudpickle"]
+rpc = ["tornado", "psutil", "cloudpickle"]
+all = ["xgboost", "psutil", "cloudpickle", "tornado"]
 
 [project.urls]
 Homepage = "https://tvm.apache.org/"
@@ -67,6 +66,8 @@ Repository = "https://github.com/apache/tvm"
 "Bug Tracker" = "https://github.com/apache/tvm/issues"
 
 [dependency-groups]
+torch = ["torch"]
+popen-pool = ["psutil", "cloudpickle"]
 test = [
   "pytest",
   "pytest-xdist",
@@ -76,6 +77,8 @@ test = [
   "pytest-timeout",
   "pytest-rerunfailures",
   "pytest-repeat",
+  { include-group = "torch" },
+  { include-group = "popen-pool" },
 ]
 lint = ["ruff", "pre-commit"]
 dev = [{ include-group = "test" }, { include-group = "lint" }]
@@ -144,7 +147,7 @@ BUILD_TESTING = "OFF"
 # Version comes from the most recent Git tag (vMAJOR.MINOR.devN or vMAJOR.MINOR.PATCH).
 # guess-next-dev reproduces the previous version.py behaviour for vMAJOR.MINOR.devN
 # tags (e.g. v0.25.dev0 + N commits -> 0.25.devN). local_scheme = "no-local-version"
-# drops the +g<hash> local segment: PyPI/TestPyPI reject local versions on upload, and
+# drops the +g<hash> local segment: PyPI rejects local versions on upload, and
 # this matches the public version the old version.py stamped.
 version_file = "python/tvm/_version.py"
 version_scheme = "guess-next-dev"
@@ -157,13 +160,7 @@ addopts = "-v --tb=short"
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-markers = [
-  "adreno_clml: Mark a test as using adreno_clml",
-  "adreno_opencl_vulkan: Mark a test as using adreno_opencl_vulkan",
-  "adreno_vulkan: Mark a test as using adreno_vulkan",
-  "adreno_opencl: Mark a test as using adreno_opencl",
-  "adreno_opencl_real: Mark a test as using adreno_opencl_real",
-]
+markers = ["gpu: Mark a test as requiring a GPU"]
 
 [tool.ruff]
 include = [

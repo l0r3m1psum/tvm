@@ -70,7 +70,7 @@ class BlockBuilderImpl : public BlockBuilderNode {
   //-------------------------------
   // Global Context management
   //-------------------------------
-  NameSupply name_supply() final { return name_supply_; }
+  UniqueNameSupply name_supply() final { return name_supply_; }
 
   IRModule GetContextIRModule() const final { return context_mod_; }
 
@@ -147,17 +147,6 @@ class BlockBuilderImpl : public BlockBuilderNode {
     if (ctx_func_dedup_map_ != nullptr) {
       (*ctx_func_dedup_map_)[function].insert(gv);
     }
-  }
-
-  [[noreturn]] void ReportFatal(const Diagnostic& diagnostic) final {
-    // TODO(relax-team): Print more context information by looking
-    // into the diagnostic->loc and surrounding IRModule.
-    // We do not materialzie DiagnosticContext to avoid double referencing to
-    // the change IRModule in COW. Additionally, we need to be able to
-    // continue use the builder after an error is thrown to avoid state building up.
-    // in an interactive environment.
-    throw ffi::Error(diagnostic->error_kind, diagnostic->message,
-                     TVMFFIBacktrace(__FILE__, __LINE__, "", 0));
   }
 
   //-------------------------------
@@ -357,8 +346,8 @@ class BlockBuilderImpl : public BlockBuilderNode {
   /*! \brief A binding table that maps var to value. */
   std::unordered_map<Id, Expr, ffi::ObjectPtrHash, ffi::ObjectPtrEqual> binding_table_;
 
-  /*! \brief A name supply to get unique names for IR construction. */
-  NameSupply name_supply_;
+  /*! \brief A unique name supply to get unique names for IR construction. */
+  UniqueNameSupply name_supply_;
 
   /*! \brief The IRModule being built by the BlockBuilder. */
   IRModule context_mod_;

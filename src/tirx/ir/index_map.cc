@@ -26,7 +26,7 @@
 #include <tvm/arith/iter_affine_map.h>
 #include <tvm/ffi/cast.h>
 #include <tvm/ffi/reflection/registry.h>
-#include <tvm/ir/name_supply.h>
+#include <tvm/ir/unique_name_supply.h>
 #include <tvm/tirx/index_map.h>
 #include <tvm/tirx/op.h>
 #include <tvm/tirx/stmt_functor.h>
@@ -68,7 +68,7 @@ std::pair<IndexMap, PrimExpr> IndexMapInverseImpl(const IndexMap& self,
     // return the pre-defined inverse index map if exists.  In this
     // case, the user-defined inverse is assumed to be correct and
     // bijective.
-    PrimExpr padding_predicate = IntImm(DataType::Bool(), 0);
+    PrimExpr padding_predicate = IntImm::Bool(false);
     return {Downcast<IndexMap>(self->inverse_index_map.value()), padding_predicate};
   }
 
@@ -275,7 +275,7 @@ ffi::Array<PrimExpr> IndexMapNode::MapShape(const ffi::Array<PrimExpr>& shape,
 
   ffi::Array<Range> ranges;
   for (auto& dim : shape) {
-    ranges.push_back(Range(make_zero(dim.dtype()), dim));
+    ranges.push_back(Range(IntImm(dim.dtype(), 0), dim));
   }
   ffi::Array<Range> mapped = MapRanges(std::move(ranges), analyzer);
 
@@ -347,7 +347,7 @@ IndexMap IndexMap::RenameVariables(
     const std::function<ffi::Optional<ffi::String>(const Var& var)>& f_name_map) const {
   std::unordered_set<std::string> used_names;
   ffi::Map<Var, Var> var_remap;
-  NameSupply name_supply;
+  UniqueNameSupply name_supply;
   const IndexMapNode* n = this->get();
   if (f_name_map != nullptr) {
     // Collect variables with pre-defined names provided by f_name_map.

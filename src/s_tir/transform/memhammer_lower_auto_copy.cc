@@ -21,6 +21,7 @@
 #include <tvm/ffi/cast.h>
 #include <tvm/ffi/function.h>
 #include <tvm/ffi/reflection/registry.h>
+#include <tvm/ir/op.h>
 #include <tvm/s_tir/stmt.h>
 #include <tvm/s_tir/transform.h>
 #include <tvm/target/target.h>
@@ -464,14 +465,14 @@ class AutoPadder {
     bool CheckVarContiguous(PrimExpr e, Var var, const ffi::Map<Var, PrimExpr>& subst_map) {
       PrimExpr e1 = Substitute(e, [var](const Var& v) -> ffi::Optional<PrimExpr> {
         if (v.same_as(var)) {
-          return IntImm(DataType::Int(32), 0);
+          return IntImm::Int32(0);
         } else {
           return v;
         }
       });
       PrimExpr e2 = Substitute(e, [var](const Var& v) -> ffi::Optional<PrimExpr> {
         if (v.same_as(var)) {
-          return IntImm(DataType::Int(32), 1);
+          return IntImm::Int32(1);
         } else {
           return v;
         }
@@ -486,8 +487,7 @@ class AutoPadder {
       } else {
         int64_t extent =
             warp_thread_extent_.Get(op->thread_binding.value()->thread_tag).value_or(1);
-        var_range_.Set(op->loop_var,
-                       Range::FromMinExtent(op->min, IntImm(DataType::Int(64), extent)));
+        var_range_.Set(op->loop_var, Range::FromMinExtent(op->min, IntImm::Int64(extent)));
       }
       if (op->kind == ForKind::kVectorized) {
         vector_var = op->loop_var;
@@ -568,8 +568,9 @@ class AutoPadder {
     void VisitStmt_(const SBlockNode* op) final {
       if (const auto* eval = op->body.as<EvaluateNode>()) {
         if (const auto* call = eval->value.as<CallNode>()) {
-          if (call->op == builtin::tvm_load_matrix_sync() ||
-              call->op == builtin::tvm_store_matrix_sync()) {
+          static const Op& tvm_load_matrix_sync_op = Op::Get("tirx.tvm_load_matrix_sync");
+          static const Op& tvm_store_matrix_sync_op = Op::Get("tirx.tvm_store_matrix_sync");
+          if (call->op == tvm_load_matrix_sync_op || call->op == tvm_store_matrix_sync_op) {
             for (const MatchBufferRegion& r : op->match_buffers) {
               Buffer src_buffer = r->source->buffer;
               runtime::StorageScope scope = runtime::StorageScope::Create(src_buffer.scope());

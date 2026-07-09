@@ -102,20 +102,18 @@ class ReturnRewriter : public StmtMutator {
 
   Stmt WriteToOut(PrimExpr val) {
     auto info = ConvertForFFI(val);
-    Stmt store_tindex =
-        tirx::Evaluate(tirx::Call(DataType::Int(32), tirx::builtin::tvm_struct_set(),
-                                  {ret_var_, IntImm(DataType::Int(32), 0),
-                                   IntImm(DataType::Int(32), tirx::builtin::kTVMFFIAnyTypeIndex),
-                                   IntImm(DataType::Int(32), info.type_index)}));
-    Stmt store_zero_padding =
-        tirx::Evaluate(tirx::Call(DataType::Int(32), tirx::builtin::tvm_struct_set(),
-                                  {ret_var_, IntImm(DataType::Int(32), 0),
-                                   IntImm(DataType::Int(32), tirx::builtin::kTVMFFIAnyZeroPadding),
-                                   IntImm(DataType::Int(32), 0)}));
-    Stmt store_val = tirx::Evaluate(
+    Stmt store_tindex = tirx::Evaluate(
         tirx::Call(DataType::Int(32), tirx::builtin::tvm_struct_set(),
-                   {ret_var_, IntImm(DataType::Int(32), 0),
-                    IntImm(DataType::Int(32), tirx::builtin::kTVMFFIAnyUnionValue), info.expr}));
+                   {ret_var_, IntImm::Int32(0), IntImm::Int32(tirx::builtin::kTVMFFIAnyTypeIndex),
+                    IntImm::Int32(info.type_index)}));
+    Stmt store_zero_padding = tirx::Evaluate(
+        tirx::Call(DataType::Int(32), tirx::builtin::tvm_struct_set(),
+                   {ret_var_, IntImm::Int32(0), IntImm::Int32(tirx::builtin::kTVMFFIAnyZeroPadding),
+                    IntImm::Int32(0)}));
+    Stmt store_val =
+        tirx::Evaluate(tirx::Call(DataType::Int(32), tirx::builtin::tvm_struct_set(),
+                                  {ret_var_, IntImm::Int32(0),
+                                   IntImm::Int32(tirx::builtin::kTVMFFIAnyUnionValue), info.expr}));
     Stmt ret_zero = Evaluate(tvm::ret(0));
     return SeqStmt({store_tindex, store_zero_padding, store_val, ret_zero});
   }
@@ -154,7 +152,7 @@ class SubroutineCallRewriter : public StmtExprMutator {
         }
 
         // push an empty handle to be compatible with current cpacked convention
-        cpacked_args.push_back(tirx::make_zero(DataType::Handle()));
+        cpacked_args.push_back(tirx::ConstHandle(0));
         made_change_ = true;
         return tirx::Call(node->dtype, tirx::builtin::tvm_call_cpacked(), cpacked_args);
       }
@@ -178,8 +176,8 @@ class SubroutineCallRewriter : public StmtExprMutator {
 ffi::Optional<ffi::String> RequiresPackedAPI(const PrimFunc& func) {
   // A function with an explicit calling convention has already been
   // lowered, and should not be modified.
-  if (auto opt = func->GetAttr<int64_t>(tvm::attr::kCallingConv)) {
-    if (CallingConv(opt.value()) != CallingConv::kDefault) {
+  if (auto opt = func->GetAttr<CallingConv>(tvm::attr::kCallingConv)) {
+    if (opt.value() != CallingConv::kDefault) {
       return std::nullopt;
     }
   }
@@ -244,15 +242,13 @@ PrimFunc MakePackedAPI(PrimFunc func) {
   ffi::Array<Var> args{v_self_handle, v_packed_args, v_num_packed_args, v_result};
 
   // reset global symbol to attach prefix
-  func = WithAttrs(
-      std::move(func),
-      {{tvm::attr::kCallingConv, static_cast<int>(CallingConv::kCPackedFunc)},
-       {tvm::attr::kTarget, target_host},
-       {tvm::attr::kGlobalSymbol, ffi::symbol::tvm_ffi_symbol_prefix + global_symbol.value()}});
+  func = WithAttrs(std::move(func), {{tvm::attr::kCallingConv, CallingConv::kCPackedFunc},
+                                     {tvm::attr::kTarget, target_host},
+                                     {tvm::attr::kGlobalSymbol,
+                                      ffi::symbol::tvm_ffi_symbol_prefix + global_symbol.value()}});
 
   Stmt body = ReturnRewriter(v_result)(func_ptr->body);
-  body = AttrStmt(make_zero(DataType::Int(32)), attr::compute_scope,
-                  StringImm(name_hint + "_compute_"), body);
+  body = AttrStmt(IntImm::Int32(0), attr::compute_scope, StringImm(name_hint + "_compute_"), body);
   // Set device context
   if (need_set_device) {
     ffi::Any node = ffi::String("default");
@@ -268,7 +264,7 @@ PrimFunc MakePackedAPI(PrimFunc func) {
   }
 
   // Return error code of zero on success
-  body = SeqStmt({body, Evaluate(ret(IntImm(DataType::Int(32), 0)))});
+  body = SeqStmt({body, Evaluate(ret(IntImm::Int32(0)))});
 
   body = MergeNest({std::move(result.init_nest), seq_check, std::move(result.asserts),
                     std::move(result.decl_buffers)},

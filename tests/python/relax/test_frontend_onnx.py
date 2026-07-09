@@ -25,9 +25,13 @@ This file is a test script to test Relax ONNX frontend coverage.
 from typing import Literal
 
 import numpy as np
+import pytest
+
+pytest.importorskip("onnx")
+pytest.importorskip("onnxruntime")
+
 import onnx
 import onnxruntime
-import pytest
 import tvm_ffi
 from onnx import ModelProto, TensorProto, helper, numpy_helper
 
@@ -798,6 +802,46 @@ def test_sign_nan_preserve():
     np.testing.assert_allclose(
         out_np[~np.isnan(ort_out)], ort_out[~np.isnan(ort_out)], rtol=1e-7, atol=1e-5
     )
+
+
+@pytest.mark.parametrize("op_name", ["ReduceMax", "ReduceMin"])
+@pytest.mark.parametrize(
+    "x",
+    [
+        # NaN in different positions. TVM's max/min fold previously dropped NaN depending on
+        # position, ONNX Runtime only propagates NaN when it is the first reduced element, which
+        # is an order-dependent implementation artifact. We instead adopt the well-defined,
+        # order-independent numpy/IEEE semantics: any NaN in the reduced range yields NaN.
+        np.array([np.nan, 1.0, 2.0], dtype=np.float32),
+        np.array([2.0, 1.0, np.nan], dtype=np.float32),
+        np.array([1.0, np.nan, 2.0], dtype=np.float32),
+        np.array([1.0, 2.0, 3.0], dtype=np.float32),
+    ],
+)
+def test_reduce_min_max_nan_preserve(op_name, x):
+    reduce_node = helper.make_node(op_name, ["x"], ["y"], keepdims=0)
+    graph = helper.make_graph(
+        [reduce_node],
+        "reduce_nan_test",
+        inputs=[helper.make_tensor_value_info("x", TensorProto.FLOAT, list(x.shape))],
+        outputs=[helper.make_tensor_value_info("y", TensorProto.FLOAT, [])],
+    )
+    model = helper.make_model(graph, producer_name="reduce_nan_test")
+    model.ir_version = 8
+    for opset_import in model.opset_import:
+        if opset_import.domain in ["", "ai.onnx"]:
+            opset_import.version = 18
+            break
+
+    # Reference is numpy (NaN propagates if any element is NaN), not ONNX Runtime.
+    ref_out = (np.max if op_name == "ReduceMax" else np.min)(x)
+
+    tvm_out = run_in_tvm(model, inputs={"x": x}, opset=18)
+    out_np = (tvm_out[0] if isinstance(tvm_out, list | tuple) else tvm_out).numpy()
+
+    np.testing.assert_array_equal(np.isnan(out_np), np.isnan(ref_out))
+    if not np.isnan(ref_out):
+        np.testing.assert_allclose(out_np, ref_out, rtol=1e-7, atol=1e-5)
 
 
 @pytest.mark.parametrize("op_name", ["Softmax", "LogSoftmax", "Hardmax"])
@@ -1997,7 +2041,7 @@ def test_pow():
 
 
 @pytest.mark.parametrize("reverse", [True, False])
-@pytest.mark.parametrize("exclusive", [False])
+@pytest.mark.parametrize("exclusive", [True, False])
 def test_cumsum(reverse, exclusive):
     cumsum_node = helper.make_node(
         "CumSum", ["x", "axis"], ["y"], reverse=reverse, exclusive=exclusive
@@ -2325,6 +2369,72 @@ def test_layer_norm():
 
     model = helper.make_model(graph, producer_name="layer_norm_test")
     check_correctness(model)
+
+    # No bias with a non-square input where data.shape[1] differs from the scale
+    # shape, see https://github.com/apache/tvm/issues/19691.
+    layer_norm_node = helper.make_node(
+        "LayerNormalization", ["input", "scale"], ["Y"], axis=-1, epsilon=1e-12
+    )
+
+    graph = helper.make_graph(
+        [layer_norm_node],
+        "layer_norm_test",
+        inputs=[
+            helper.make_tensor_value_info("input", TensorProto.FLOAT, [2, 3, 4, 8]),
+            helper.make_tensor_value_info("scale", TensorProto.FLOAT, [8]),
+        ],
+        outputs=[
+            helper.make_tensor_value_info("Y", TensorProto.FLOAT, [2, 3, 4, 8]),
+        ],
+    )
+
+    model = helper.make_model(graph, producer_name="layer_norm_test")
+    check_correctness(model)
+
+    # No bias with a non-square fp16 input. The synthesized zero bias must match
+    # the scale dtype, otherwise layer_norm rejects the float32 bias, see
+    # https://github.com/apache/tvm/issues/19691.
+    layer_norm_node = helper.make_node(
+        "LayerNormalization", ["input", "scale"], ["Y"], axis=-1, epsilon=1e-12
+    )
+
+    graph = helper.make_graph(
+        [layer_norm_node],
+        "layer_norm_test",
+        inputs=[
+            helper.make_tensor_value_info("input", TensorProto.FLOAT16, [2, 3, 4, 8]),
+            helper.make_tensor_value_info("scale", TensorProto.FLOAT16, [8]),
+        ],
+        outputs=[
+            helper.make_tensor_value_info("Y", TensorProto.FLOAT16, [2, 3, 4, 8]),
+        ],
+    )
+
+    model = helper.make_model(graph, producer_name="layer_norm_test")
+    check_correctness(model, opset=17, atol=1e-2, rtol=1e-2)
+
+    # Same no-bias path for bf16. ONNX Runtime's CPU provider has no bf16
+    # LayerNormalization kernel, so this only checks the importer builds the
+    # graph with a bf16 zero bias (the dtype the fix derives from the scale).
+    layer_norm_node = helper.make_node(
+        "LayerNormalization", ["input", "scale"], ["Y"], axis=-1, epsilon=1e-12
+    )
+
+    graph = helper.make_graph(
+        [layer_norm_node],
+        "layer_norm_test",
+        inputs=[
+            helper.make_tensor_value_info("input", TensorProto.BFLOAT16, [2, 3, 4, 8]),
+            helper.make_tensor_value_info("scale", TensorProto.BFLOAT16, [8]),
+        ],
+        outputs=[
+            helper.make_tensor_value_info("Y", TensorProto.BFLOAT16, [2, 3, 4, 8]),
+        ],
+    )
+
+    model = helper.make_model(graph, producer_name="layer_norm_test")
+    model.opset_import[0].version = 17
+    from_onnx(model, opset=17, keep_params_in_input=True)
 
 
 def test_layer_norm_with_nd_gamma_beta():

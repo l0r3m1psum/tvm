@@ -25,7 +25,6 @@ set -euxo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 build_dir="${repo_root}/build-wheel-cuda"
-python_bin="/opt/python/cp310-cp310/bin/python"
 parallel="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 
 # Install the pinned CUDA toolkit into the manylinux_2_28 container. The RHEL8
@@ -44,7 +43,6 @@ dnf clean all
 # the LLVM prefix; the main CPU wheel links LLVM statically. The manylinux image
 # ships no cmake/ninja, so install the build tools here.
 export PATH="/opt/python/cp310-cp310/bin:/usr/local/cuda/bin:${PATH}"
-"${python_bin}" -m pip install -U pip cmake ninja
 nvcc --version
 
 rm -rf "${build_dir}"

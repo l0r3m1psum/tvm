@@ -28,6 +28,7 @@ import tvm
 import tvm.testing
 from tvm.script import tirx as T
 from tvm.script.tirx import tile as Tx
+from tvm.testing import env
 from tvm.tirx.layout import ComposeLayout, S, SwizzleLayout, TileLayout
 
 
@@ -102,6 +103,8 @@ TASKS = [
 ]
 
 
+@pytest.mark.gpu
+@pytest.mark.skipif(not env.has_cuda_compute(9), reason="need cuda compute >= 9.0")
 @pytest.mark.parametrize(
     "scope,n_threads,shape",
     [pytest.param(*t, id=f"{t[0]}-{t[1]}-{'x'.join(map(str, t[2]))}") for t in TASKS],
@@ -193,6 +196,8 @@ def test_gmem_smem_roundtrip(scope, n_threads, shape, dtype):
         ),
     ],
 )
+@pytest.mark.gpu
+@pytest.mark.skipif(not env.has_cuda_compute(9), reason="need cuda compute >= 9.0")
 @pytest.mark.parametrize(
     "dtype", ["int8", "float8_e4m3fn", "float8_e5m2", "float16", "bfloat16", "float32"]
 )
@@ -253,7 +258,7 @@ def test_copy_g2s_s2g(task, dtype, scope):
 def _align(
     g_layout, g_shape, s_layout, s_shape, elem_bits, thread_cnt, g_region=None, s_region=None
 ):
-    from tvm.tirx.operator.tile_primitive.cuda.copy._common import align_layouts_gs
+    from tvm.tirx.cuda.operator.tile_primitive.copy._common import align_layouts_gs
 
     target = tvm.target.Target("cuda")
     if g_region is None:
@@ -509,7 +514,8 @@ def test_layout_permute_copy_preserves_smem_strides():
 # recognizer accepts, and emit lowers to the
 # ``base_off + sum_j bit_j(f) · signed_strides[j]`` precomputed form.
 # ----------------------------------------------------------------------------
-@tvm.testing.requires_cuda_compute_version(9)
+@pytest.mark.gpu
+@pytest.mark.skipif(not env.has_cuda_compute(9), reason="need cuda compute >= 9.0")
 def test_gmem_smem_swizzle_fast_path_fires_with_var_bounds():
     """Warp-scope 32x64 fp16 G2S/S2G with 128b swizzled SMEM. Fast path
     must fire: a 3-slot ``v_<n>[]`` signed_strides buffer + bit-select adds

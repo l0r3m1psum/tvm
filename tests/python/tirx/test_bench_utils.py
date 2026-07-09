@@ -19,7 +19,9 @@
 import pytest
 import torch
 
-import tvm.testing
+pytest.importorskip("triton")  # tvm.tirx.bench imports triton.profiler
+
+from tvm.testing import env
 from tvm.tirx.bench import _compute_group_count, _parse_proton_tree, bench, tensor_bytes
 
 # ── _parse_proton_tree ──────────────────────────────────────────────────────
@@ -89,7 +91,8 @@ def test_parse_proton_tree_empty():
 # ── bench ───────────────────────────────────────────────────────────────────
 
 
-@tvm.testing.requires_cuda
+@pytest.mark.gpu
+@pytest.mark.skipif(not env.has_cuda(), reason="need cuda")
 def test_bench_basic():
     """bench returns positive times for each impl."""
     M, N = 256, 256
@@ -106,7 +109,8 @@ def test_bench_basic():
     assert results["impls"]["matmul"] > 0
 
 
-@tvm.testing.requires_cuda
+@pytest.mark.gpu
+@pytest.mark.skipif(not env.has_cuda(), reason="need cuda")
 def test_bench_multiple_impls():
     """Multiple impls each get their own timing."""
     M, N = 128, 128
@@ -127,7 +131,8 @@ def test_bench_multiple_impls():
     assert all(v > 0 for v in results["impls"].values())
 
 
-@tvm.testing.requires_cuda
+@pytest.mark.gpu
+@pytest.mark.skipif(not env.has_cuda(), reason="need cuda")
 def test_bench_multiple_input_groups():
     """Multiple input groups cycle correctly (L2 eviction)."""
     M, N = 128, 128
@@ -174,7 +179,8 @@ def test_compute_groups_moderate_tensors():
     assert n == 4
 
 
-@tvm.testing.requires_cuda
+@pytest.mark.gpu
+@pytest.mark.skipif(not env.has_cuda(), reason="need cuda")
 def test_bench_legacy_callable_api():
     """bench still accepts the existing single-callable API used by TIRx tests."""
     M, N = 128, 128
@@ -187,7 +193,8 @@ def test_bench_legacy_callable_api():
     assert result > 0
 
 
-@tvm.testing.requires_cuda
+@pytest.mark.gpu
+@pytest.mark.skipif(not env.has_cuda(), reason="need cuda")
 def test_bench_callable_inputs():
     """bench accepts a factory callable and auto-computes groups."""
     M, N = 256, 256

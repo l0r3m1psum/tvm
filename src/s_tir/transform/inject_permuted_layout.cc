@@ -23,6 +23,7 @@
  */
 #include <tvm/arith/analyzer.h>
 #include <tvm/ffi/reflection/registry.h>
+#include <tvm/ir/op.h>
 #include <tvm/s_tir/transform.h>
 #include <tvm/tirx/function.h>
 #include <tvm/tirx/op.h>
@@ -254,12 +255,14 @@ class PermutedLayoutInjector : private IRMutatorWithAnalyzer {
       return call;
     }
 
-    if (!call->op.same_as(builtin::ptx_ldmatrix()) && !call->op.same_as(builtin::mma_store())) {
+    static const Op& ptx_ldmatrix_op = Op::Get("tirx.ptx.ldmatrix_legacy");
+    static const Op& mma_store_op = Op::Get("tirx.mma_store_legacy");
+    if (!call->op.same_as(ptx_ldmatrix_op) && !call->op.same_as(mma_store_op)) {
       return call;
     }
 
-    if (call->op.same_as(builtin::ptx_ldmatrix())) {
-      // form: T.ptx_ldmatrix(..., smem_ptr, smem_offset)
+    if (call->op.same_as(ptx_ldmatrix_op)) {
+      // form: T.ptx.ldmatrix_legacy(..., smem_ptr, smem_offset)
       // smem_ptr: T.tvm_access_ptr(ptype, data, offset, extent, rw_mask)
       auto access_ptr = call->args[5];
       PrimExpr smem_offset = call->args[6];
@@ -268,7 +271,7 @@ class PermutedLayoutInjector : private IRMutatorWithAnalyzer {
       new_call->args.Set(5, new_access_ptr);
       new_call->args.Set(6, IntImm(smem_offset->dtype, 0));
       return call;
-    } else if (call->op.same_as(builtin::mma_store())) {
+    } else if (call->op.same_as(mma_store_op)) {
       // TODO(yixin): mma_store is not fully tested yet
       // because we will directly store result to Buffer instead of calling mma_store now
       auto access_ptr = call->args[2];

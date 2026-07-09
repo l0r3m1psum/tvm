@@ -32,14 +32,15 @@ import tvm.testing
 from tvm.ir.type import PointerType, PrimType
 from tvm.script import tirx as T
 from tvm.script.tirx import tile as Tx
-from tvm.tirx.layout import S, TCol, TileLayout, TLane, tcgen05_atom_layout
-from tvm.tirx.layout import tid_in_wg as axis_tid_in_wg
-from tvm.tirx.operator.tile_primitive.cuda.gemm_async import sf_tmem_layout
-from tvm.tirx.operator.tile_primitive.cuda.tma_utils import (
+from tvm.testing import env
+from tvm.tirx.cuda.operator.tile_primitive.gemm_async import sf_tmem_layout
+from tvm.tirx.cuda.operator.tile_primitive.tma_utils import (
     mma_atom_layout,
     mma_atom_shape,
     mma_shared_layout,
 )
+from tvm.tirx.layout import S, TCol, TileLayout, TLane, tcgen05_atom_layout
+from tvm.tirx.layout import tid_in_wg as axis_tid_in_wg
 
 # ---------------------------------------------------------------------------
 # Shared test helpers
@@ -167,6 +168,8 @@ def pack_sf_fp8_uint32(sf_uint8, n_total=128):
     return packed
 
 
+@pytest.mark.gpu
+@pytest.mark.skipif(not env.has_cuda_compute(10), reason="need cuda compute >= 10.0")
 @pytest.mark.parametrize(
     "task",
     [
@@ -293,6 +296,8 @@ def test_gemm_tcgen05_cta_group_1(task):
         np.testing.assert_allclose(C_tvm.numpy(), C_ref, atol=1e-3, rtol=1e-3)
 
 
+@pytest.mark.gpu
+@pytest.mark.skipif(not env.has_cuda_compute(10), reason="need cuda compute >= 10.0")
 def test_gemm_tcgen05_cta_group_1_layout_f_m64():
     """M=64 MMA with C operand allocated as Layout F (datapath="F").
 
@@ -405,6 +410,8 @@ def test_gemm_tcgen05_cta_group_1_layout_f_m64():
     np.testing.assert_allclose(C_tvm.numpy(), C_ref, atol=1e-2, rtol=1e-2)
 
 
+@pytest.mark.gpu
+@pytest.mark.skipif(not env.has_cuda_compute(10), reason="need cuda compute >= 10.0")
 @pytest.mark.parametrize(
     "task",
     [
@@ -545,6 +552,8 @@ def test_gemm_tcgen05_cta_group_2(task):
         np.testing.assert_allclose(C_tvm.numpy(), C_ref, atol=1e-3, rtol=1e-3)
 
 
+@pytest.mark.gpu
+@pytest.mark.skipif(not env.has_cuda_compute(10), reason="need cuda compute >= 10.0")
 def test_gemm_tcgen05_cta_group_2_layout_b():
     """Test cta_group=2 with Layout B (2x2 datapath, M=128 total, 64 per CTA).
 
@@ -675,6 +684,8 @@ def test_gemm_tcgen05_cta_group_2_layout_b():
         np.testing.assert_allclose(C_tvm.numpy(), C_ref, atol=1e-3, rtol=1e-3)
 
 
+@pytest.mark.gpu
+@pytest.mark.skipif(not env.has_cuda_compute(10), reason="need cuda compute >= 10.0")
 @pytest.mark.skipif(ml_dtypes is None, reason="Requires ml_dtypes")
 @pytest.mark.parametrize(
     "task",
@@ -864,6 +875,8 @@ def test_gemm_block_scaled_fp8_cta_group_1(task):
         np.testing.assert_allclose(C_tvm.numpy(), C_ref, atol=1.0, rtol=0.15)
 
 
+@pytest.mark.gpu
+@pytest.mark.skipif(not env.has_cuda_compute(10), reason="need cuda compute >= 10.0")
 @pytest.mark.skipif(ml_dtypes is None, reason="Requires ml_dtypes")
 @pytest.mark.parametrize(
     "task",
@@ -1089,6 +1102,8 @@ def test_gemm_block_scaled_fp8_cta_group_2(task):
         np.testing.assert_allclose(C_tvm.numpy(), C_ref, atol=1.0, rtol=0.15)
 
 
+@pytest.mark.gpu
+@pytest.mark.skipif(not env.has_cuda_compute(10), reason="need cuda compute >= 10.0")
 @pytest.mark.skipif(ml_dtypes is None, reason="Requires ml_dtypes")
 def test_gemm_block_scaled_nvfp4_cta_group_1():
     """Test block-scaled nvfp4 GEMM with cta_group=1.
@@ -1258,6 +1273,8 @@ def test_gemm_block_scaled_nvfp4_cta_group_1():
         np.testing.assert_allclose(C_tvm.numpy(), C_ref, atol=1.0, rtol=0.15)
 
 
+@pytest.mark.gpu
+@pytest.mark.skipif(not env.has_cuda_compute(10), reason="need cuda compute >= 10.0")
 @pytest.mark.skipif(ml_dtypes is None, reason="Requires ml_dtypes")
 def test_gemm_block_scaled_nvfp4_cta_group_2():
     """Test block-scaled nvfp4 GEMM with cta_group=2.
@@ -1462,6 +1479,8 @@ def test_gemm_block_scaled_nvfp4_cta_group_2():
         np.testing.assert_allclose(C_tvm.numpy(), C_ref, atol=1.0, rtol=0.15)
 
 
+@pytest.mark.gpu
+@pytest.mark.skipif(not env.has_cuda_compute(10), reason="need cuda compute >= 10.0")
 @pytest.mark.skipif(ml_dtypes is None, reason="Requires ml_dtypes")
 def test_gemm_block_scaled_fp8_sf_id():
     """Test sf_id auto-derivation from layout for fp8 block-scaled MMA.
@@ -1681,6 +1700,8 @@ def test_gemm_block_scaled_fp8_sf_id():
             )
 
 
+@pytest.mark.gpu
+@pytest.mark.skipif(not env.has_cuda_compute(10), reason="need cuda compute >= 10.0")
 @pytest.mark.parametrize(
     "task",
     [
@@ -1958,6 +1979,92 @@ def test_gemm_tcgen05_arbitrary_tiles(task):
         )
         C_ref[tuple(r_tmem_C)] = A_ref @ B_ref
         np.testing.assert_allclose(C_tvm.numpy(), C_ref, atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not env.has_cuda_compute(10), reason="need cuda compute >= 10.0")
+@pytest.mark.parametrize("k_lo,k_hi", [(0, 16), (0, 32), (16, 32), (16, 48), (32, 64)])
+def test_gemm_tcgen05_contiguous_kslice_partial_k(k_lo, k_hi):
+    """A slice on the *contiguous* (K) axis of a swizzled gemm_async operand must
+    compute the correct partial-K product, not silently use full K.
+
+    The operand buffer is 128B-swizzled (contiguous atom = 64 elems for fp16) and
+    the gemm operand is sliced to K=[lo:hi] on that axis. The descriptor is
+    anchored on the buffer's physical swizzle while K_iters covers only the slice,
+    so the MMA accumulates exactly k in [lo, hi) -- enabling fine K-major split-K.
+    Any MMA_K(16)-aligned [lo:hi] is supported.
+    """
+    from tvm.tirx.cuda.operator.tile_primitive.tma_utils import SwizzleMode
+
+    M, N, K_alloc = 128, 128, 64
+    dtype = "float16"
+    A_shape, B_shape, C_shape = (M, K_alloc), (N, K_alloc), (M, N)
+    A_layout = mma_shared_layout(dtype, SwizzleMode.SWIZZLE_128B_ATOM, A_shape)
+    B_layout = mma_shared_layout(dtype, SwizzleMode.SWIZZLE_128B_ATOM, B_shape)
+    total_bytes = (M * K_alloc + N * K_alloc) * 2
+
+    # fmt: off
+    @T.prim_func
+    def gemm_async(A_ptr: T.handle, B_ptr: T.handle, C_ptr: T.handle) -> None:
+        A = T.match_buffer(A_ptr, A_shape, dtype)
+        B = T.match_buffer(B_ptr, B_shape, dtype)
+        C = T.match_buffer(C_ptr, C_shape, "float32")
+        T.device_entry()
+        warp_id = T.warp_id([4])
+        wg_id = T.warpgroup_id([1])
+        tid_in_wg = T.thread_id_in_wg([128])
+        A_smem = T.alloc_buffer(A_shape, dtype, scope="shared", layout=A_layout)
+        B_smem = T.alloc_buffer(B_shape, dtype, scope="shared", layout=B_layout)
+        tmem_addr = T.alloc_shared([1], "uint32")
+        tma_mbar = T.alloc_shared([1], "uint64")
+        mma_mbar = T.alloc_shared([1], "uint64")
+        if tid_in_wg == 0:
+            T.ptx.mbarrier.init(tma_mbar.ptr_to([0]), 1)
+            T.ptx.mbarrier.init(mma_mbar.ptr_to([0]), 1)
+        T.ptx.fence.proxy_async("shared::cta")
+        T.cuda.cta_sync()
+        if warp_id == 0:
+            T.ptx.tcgen05.alloc(T.address_of(tmem_addr), n_cols=128, cta_group=1)
+        T.cuda.cta_sync()
+        tmem = T.decl_buffer((128, N), "float32", scope="tmem", allocated_addr=tmem_addr[0], layout=TileLayout(S[(128, N) : (1 @ TLane, 1 @ TCol)]))  # noqa: E501
+        if tid_in_wg == 0:
+            tma_args = T.meta_var({"dispatch": "tma", "mbar": tma_mbar.ptr_to([0])})
+            Tx.copy_async(A_smem[0:M, 0:K_alloc], A[0:M, 0:K_alloc], **tma_args)
+            Tx.copy_async(B_smem[0:N, 0:K_alloc], B[0:N, 0:K_alloc], **tma_args)
+            T.ptx.mbarrier.arrive.expect_tx(tma_mbar.ptr_to([0]), total_bytes)
+        T.ptx.mbarrier.try_wait(tma_mbar.ptr_to([0]), 0)
+        T.cuda.cta_sync()
+        if tid_in_wg == 0:
+            # Contiguous-axis K slice [k_lo:k_hi] -> must accumulate only that K range.
+            Tx.gemm_async(tmem[0:128, 0:N], A_smem[0:M, k_lo:k_hi], B_smem[0:N, k_lo:k_hi], dispatch="tcgen05")  # noqa: E501
+            T.ptx.tcgen05.commit(mma_mbar.ptr_to([0]), cta_group=1)
+        T.ptx.mbarrier.try_wait(mma_mbar.ptr_to([0]), 0)
+        T.cuda.cta_sync()
+        T.ptx.tcgen05.fence.after_thread_sync()
+        C_reg = T.alloc_local(N, dtype="float32")
+        C_view = C_reg.view(128, N, layout=TileLayout(S[(128, N) : (1@axis_tid_in_wg, 1)]))
+        if wg_id == 0:
+            Tx.wg.copy_async(C_view[:, :], tmem[0:128, 0:N])
+            T.ptx.tcgen05.wait.ld()
+        T.cuda.cta_sync()
+        Tx.copy(C[tid_in_wg, 0:N], C_reg[:])
+        if warp_id == 0:
+            T.ptx.tcgen05.relinquish_alloc_permit(cta_group=1)
+            T.ptx.tcgen05.dealloc(tmem_addr[0], n_cols=128, cta_group=1)
+    # fmt: on
+
+    dev = tvm.cuda(0)
+    np.random.seed(0)
+    with tvm.target.Target("cuda"):
+        mod = tvm.compile(tvm.IRModule({"main": gemm_async}), target="cuda", tir_pipeline="tirx")
+    A_np = np.random.randn(*A_shape).astype(dtype)
+    B_np = np.random.randn(*B_shape).astype(dtype)
+    C_np = np.zeros(C_shape, "float32")
+    A_t, B_t, C_t = (tvm.runtime.tensor(x, dev) for x in (A_np, B_np, C_np))
+    mod["main"](A_t, B_t, C_t)
+    # Reference: accumulate only k in [k_lo, k_hi).
+    C_ref = A_np[:, k_lo:k_hi].astype("float32") @ B_np[:, k_lo:k_hi].astype("float32").T
+    np.testing.assert_allclose(C_t.numpy(), C_ref, atol=1e-2, rtol=1e-2)
 
 
 if __name__ == "__main__":

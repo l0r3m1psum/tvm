@@ -24,6 +24,7 @@
 
 #include <tvm/arith/iter_affine_map.h>
 #include <tvm/ffi/cast.h>
+#include <tvm/ir/op.h>
 #include <tvm/s_tir/stmt.h>
 #include <tvm/tirx/analysis.h>
 #include <tvm/tirx/builtin.h>
@@ -54,10 +55,10 @@ void AppendFloorDivConstraints(const FloorDivNode* div, int64_t value, CompareKi
   if (!TryGetIntImm(div->b, &divisor_value) || divisor_value <= 0) return;
 
   DataType dtype = div->a.dtype();
-  PrimExpr divisor = make_const(dtype, divisor_value);
-  PrimExpr k = make_const(dtype, value);
+  PrimExpr divisor = MakeConst(dtype, divisor_value);
+  PrimExpr k = MakeConst(dtype, value);
   PrimExpr lo = k * divisor;
-  PrimExpr hi = (k + make_const(dtype, 1)) * divisor;
+  PrimExpr hi = (k + MakeConst(dtype, 1)) * divisor;
 
   switch (kind) {
     case CompareKind::kEQ:
@@ -159,7 +160,7 @@ void IRMutatorWithAnalyzer::MarkBufferMapShapes(const tirx::PrimFunc& func) {
 
 ffi::Array<PrimExpr> IRMutatorWithAnalyzer::IterMapSimplifyWithContext(
     const ffi::Array<PrimExpr>& indices, bool non_trivial_only) {
-  PrimExpr pred = const_true();
+  PrimExpr pred = IntImm::Bool(true);
   for (PrimExpr val : iter_predicates_) {
     pred = pred && val;
   }
@@ -215,10 +216,10 @@ Stmt IRMutatorWithAnalyzer::VisitStmt_(const IfThenElseNode* op) {
   return constraint_scope_.WithNewScope([&]() -> Stmt {
     PrimExpr condition = this->VisitExpr(op->condition);
     PrimExpr real_condition = condition;
-    static auto op_likely = Op::Get("tirx.likely");
 
     if (auto call = condition.as<CallNode>()) {
-      if (call->op.same_as(op_likely)) {
+      static const Op& likely_op = Op::Get("tirx.likely");
+      if (call->op.same_as(likely_op)) {
         real_condition = call->args[0];
       }
     }
@@ -259,7 +260,7 @@ Stmt IRMutatorWithAnalyzer::VisitStmt_(const AttrStmtNode* op) {
     if (op->attr_key == tirx::attr::thread_extent || op->attr_key == s_tir::attr::virtual_thread) {
       IterVar iv = Downcast<IterVar>(op->node);
       TVM_FFI_ICHECK_NE(iv->thread_tag.length(), 0U);
-      Range dom = Range::FromMinExtent(make_zero(op->value.dtype()), op->value);
+      Range dom = Range::FromMinExtent(IntImm(op->value.dtype(), 0), op->value);
       analyzer_->Bind(iv->var, dom);
       iter_vars_.Set(iv->var, dom);
     }
@@ -287,8 +288,8 @@ Stmt IRMutatorWithAnalyzer::VisitStmt_(const SeqStmtNode* op) {
 
 PrimExpr IRMutatorWithAnalyzer::VisitExpr_(const CallNode* op) {
   // add condition context to if_then_else
-  static auto op_if_then_else = Op::Get("tirx.if_then_else");
-  if (op->op.same_as(op_if_then_else)) {
+  static const Op& if_then_else_op = Op::Get("tirx.if_then_else");
+  if (op->op.same_as(if_then_else_op)) {
     PrimExpr cond = this->VisitExpr(op->args[0]);
     PrimExpr true_value, false_value;
     constraint_scope_.WithNewScope([&]() {

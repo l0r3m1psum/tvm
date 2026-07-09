@@ -23,6 +23,7 @@
 #include <tvm/arith/analyzer.h>
 #include <tvm/ffi/function.h>
 #include <tvm/ffi/reflection/registry.h>
+#include <tvm/ir/op.h>
 #include <tvm/tirx/op.h>
 #include <tvm/tirx/op_attr_types.h>
 #include <tvm/tirx/stmt.h>
@@ -155,7 +156,7 @@ For::For(Var loop_var, PrimExpr min, PrimExpr extent, ForKind kind, Stmt body,
         << ") is narrower than that of `min` or `extent` (" << e.dtype() << ")";
     const IntImmNode* a = e.as<IntImmNode>();
     if (a && e.dtype().bits() < loop_var.dtype().bits()) {
-      return make_const(loop_var.dtype(), a->value);
+      return MakeConst(loop_var.dtype(), a->value);
     } else {
       return e;
     }
@@ -477,7 +478,7 @@ PrimExpr BufferRegionNode::ToPrimExpr() const {
     if (tvm::tirx::is_one(r->extent)) {
       indices.push_back(r->min);
     } else if (r->extent.as<IntImmNode>()) {
-      indices.push_back(tirx::Ramp(r->min, tvm::tirx::make_const(r->min->dtype, 1), r->extent));
+      indices.push_back(tirx::Ramp(r->min, tvm::tirx::MakeConst(r->min->dtype, 1), r->extent));
     } else {
       TVM_FFI_THROW(ValueError) << "Cannot convert to BufferLoad: "
                                 << ffi::GetRef<BufferRegion>(this);
@@ -511,7 +512,7 @@ BufferRegion BufferRegion::FromPoint(Buffer buffer, ffi::Array<PrimExpr> indices
       region.push_back(
           Range::FromMinExtent(ramp_index->base, ramp_index->stride * ramp_index->lanes));
     } else {
-      region.push_back(Range::FromMinExtent(index, make_const(index.dtype(), 1)));
+      region.push_back(Range::FromMinExtent(index, MakeConst(index.dtype(), 1)));
     }
   }
   return BufferRegion(buffer, region);
@@ -670,8 +671,8 @@ TVM_FFI_STATIC_INIT_BLOCK() {
 }
 
 PrimExpr TypeAnnotation(DataType dtype, Span span) {
-  static auto op = Op::Get("tirx.type_annotation");
-  return tirx::Call(dtype, op, {}, {}, span);
+  static const Op& type_annotation_op = Op::Get("tirx.type_annotation");
+  return tirx::Call(dtype, type_annotation_op, {}, {}, span);
 }
 
 TVM_TIRX_REGISTER_OP("type_annotation")

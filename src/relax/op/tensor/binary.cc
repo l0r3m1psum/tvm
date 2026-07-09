@@ -25,6 +25,7 @@
 #include "binary.h"
 
 #include <tvm/ffi/cast.h>
+#include <tvm/ffi/extra/visit_error_context.h>
 
 #include <algorithm>
 
@@ -37,8 +38,8 @@ StructInfo InferStructInfoBroadcast(const Call& call, const BlockBuilder& ctx,
   Op op = Downcast<Op>(call->op);
   size_t n_input = op->arguments.size();
   if (call->args.size() != n_input) {
-    ctx->ReportFatal(Diagnostic::Error(call)
-                     << call->op << " op should have " << n_input << " arguments");
+    TVM_FFI_VISIT_THROW(ValueError, call)
+        << call->op << " op should have " << n_input << " arguments";
   }
 
   auto lhs_sinfo = GetStructInfo(call->args[0]);
@@ -90,7 +91,7 @@ StructInfo InferStructInfoBroadcast(const Call& call, const BlockBuilder& ctx,
 
   auto get_shape = [](const StructInfo& sinfo) -> ffi::Optional<ffi::Array<PrimExpr>> {
     if (sinfo.as<PrimStructInfoNode>()) {
-      return ffi::Array<PrimExpr>{IntImm(DataType::Int(64), 1)};
+      return ffi::Array<PrimExpr>{IntImm::Int64(1)};
     } else if (const auto* tensor = sinfo.as<TensorStructInfoNode>()) {
       return tensor->GetShape();
     } else {

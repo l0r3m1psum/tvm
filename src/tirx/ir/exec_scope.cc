@@ -17,6 +17,7 @@
  * under the License.
  */
 #include <tvm/arith/analyzer.h>
+#include <tvm/ir/op.h>
 #include <tvm/runtime/logging.h>
 #include <tvm/tirx/builtin.h>
 #include <tvm/tirx/exec_scope.h>
@@ -384,11 +385,12 @@ ffi::Array<PrimExpr> ResolveCuda(ScopeBinding binding,
     case ScopeBinding::kKernelCluster: {
       TVM_FFI_ICHECK_LE(out_dim, 3)
           << "ValueError: kernel->cluster can only have 3 dimensions for now";
+      static const Op& ptx_fetch_register_op = Op::Get("tirx.ptx.fetch_register");
       ffi::Array<PrimExpr> ret;
       for (int i = 0; i < out_dim; ++i) {
-        ret.push_back(tirx::Call(
-            DataType::Int(32), builtin::ptx_fetch_register(),
-            {IntImm(DataType::Int(32), 32), StringImm("clusterid." + std::string(1, 'x' + i))}));
+        ret.push_back(
+            tirx::Call(DataType::Int(32), ptx_fetch_register_op,
+                       {IntImm::Int32(32), StringImm("clusterid." + std::string(1, 'x' + i))}));
       }
       return ret;
     }
@@ -438,8 +440,7 @@ PrimExpr ScopeIdResolve::ComputeWarpIdInCta(const LaunchParams& params) {
   PrimExpr warp_id = FloorDiv(GetLinearThreadIndex(params), 32);
   PrimExpr mask = IntImm(DataType::UInt(32), 0xffffffff);
   return Call(warp_id.dtype(), builtin::tvm_warp_shuffle(),
-              {mask, warp_id, IntImm(DataType::Int(32), 0), IntImm(DataType::Int(32), 32),
-               IntImm(DataType::Int(32), 32)});
+              {mask, warp_id, IntImm::Int32(0), IntImm::Int32(32), IntImm::Int32(32)});
 }
 
 }  // namespace tirx

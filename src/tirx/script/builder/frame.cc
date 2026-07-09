@@ -16,6 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+#include <tvm/ir/op.h>
 #include <tvm/runtime/logging.h>
 #include <tvm/script/ir_builder/ir/ir.h>
 #include <tvm/tirx/builtin.h>
@@ -181,7 +182,7 @@ void SBlockFrameNode::ExitWithScope() {
   }
   ffi::Map<ffi::String, Any> attrs = annotations.value_or({});
   if (int detect_access = (!reads.defined()) | (!writes.defined() << 1)) {
-    attrs.Set("tirx.script_parsing_detect_access", tvm::IntImm(DataType::Int(64), detect_access));
+    attrs.Set("tirx.script_parsing_detect_access", tvm::IntImm::Int64(detect_access));
   }
   tvm::tirx::SBlock block(iter_vars, reads.value_or(ffi::Array<tvm::tirx::BufferRegion>()),
                           writes.value_or(ffi::Array<tvm::tirx::BufferRegion>()), name,
@@ -194,8 +195,8 @@ void SBlockFrameNode::ExitWithScope() {
         << "`T.where` is not allowed when `no_realize=True`";
     AddToParent(block);
   } else {
-    AddToParent(tvm::tirx::SBlockRealize(iter_values,
-                                         predicate.value_or(IntImm(DataType::Bool(), 1)), block));
+    AddToParent(
+        tvm::tirx::SBlockRealize(iter_values, predicate.value_or(IntImm::Bool(true)), block));
   }
 }
 
@@ -311,7 +312,7 @@ void ComposeOpFrameNode::ExitWithScope() {
                             << stmt;
     ops.push_back(ffi::GetRef<tvm::tirx::TilePrimitiveCall>(op_call));
   }
-  auto compose_op_op = tvm::Op::Get("tirx.tile.compose_op");
+  static const Op& compose_op_op = Op::Get("tirx.tile.compose_op");
   AddToParent(tvm::tirx::TilePrimitiveCall(compose_op_op, ops, workspace, config, dispatch));
 }
 
@@ -330,8 +331,7 @@ void HintFrameNode::ExitWithScope() {
   for (const auto& [k, v] : attrs) {
     full_attrs.Set(k, v);
   }
-  AddToParent(
-      tvm::tirx::AttrStmt(full_attrs, "tirx_hint", IntImm(DataType::Int(32), 1), AsStmt(stmts)));
+  AddToParent(tvm::tirx::AttrStmt(full_attrs, "tirx_hint", IntImm::Int32(1), AsStmt(stmts)));
 }
 
 }  // namespace tirx

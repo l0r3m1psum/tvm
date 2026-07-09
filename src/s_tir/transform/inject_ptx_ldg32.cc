@@ -21,6 +21,7 @@
 #include <tvm/arith/iter_affine_map.h>
 #include <tvm/ffi/function.h>
 #include <tvm/ffi/reflection/registry.h>
+#include <tvm/ir/op.h>
 #include <tvm/s_tir/transform.h>
 #include <tvm/tirx/analysis.h>
 #include <tvm/tirx/op.h>
@@ -87,17 +88,17 @@ class PTXRewriter : public StmtMutator {
         EnsureBuffers();
         needs_buffer = true;
         local_addr = store->indices[0];
-        BufferStore addr_store(addr_buffer, global_addr, {IntImm(DataType::Int(32), 0)});
-        BufferStore local_addr_store(addr_buffer, local_addr, {IntImm(DataType::Int(32), 1)});
-        BufferStore predicate_store(predicate_buffer, predicate, {IntImm(DataType::Int(32), 0)});
+        BufferStore addr_store(addr_buffer, global_addr, {IntImm::Int32(0)});
+        BufferStore local_addr_store(addr_buffer, local_addr, {IntImm::Int32(1)});
+        BufferStore predicate_store(predicate_buffer, predicate, {IntImm::Int32(0)});
         PrimExpr new_lhs, new_rhs, new_predicate, new_indice;
-        new_lhs =
-            BufferLoad(load->buffer, {BufferLoad(addr_buffer, {IntImm(DataType::Int(32), 0)})});
-        new_rhs = IntImm(DataType::Int(32), 0);
-        new_predicate = BufferLoad(predicate_buffer, {IntImm(DataType::Int(32), 0)});
-        new_indice = BufferLoad(addr_buffer, {IntImm(DataType::Int(32), 1)});
+        new_lhs = BufferLoad(load->buffer, {BufferLoad(addr_buffer, {IntImm::Int32(0)})});
+        new_rhs = IntImm::Int32(0);
+        new_predicate = BufferLoad(predicate_buffer, {IntImm::Int32(0)});
+        new_indice = BufferLoad(addr_buffer, {IntImm::Int32(1)});
         BufferStore value_store(store->buffer, imm_value, {new_indice});
-        Evaluate ptx_load(Call(store->buffer->dtype, tvm::tirx::builtin::ptx_ldg32(),
+        static const Op& ptx_ldg32_op = Op::Get("tirx.ptx.ldg32");
+        Evaluate ptx_load(Call(store->buffer->dtype, ptx_ldg32_op,
                                {store->buffer->data, new_predicate, new_lhs, new_indice}));
         ffi::Array<Stmt> tmp_seq = {addr_store, local_addr_store, predicate_store, value_store,
                                     ptx_load};
@@ -114,9 +115,8 @@ class PTXRewriter : public StmtMutator {
     }
     has_buffer_1 = true;
     // addr[0] -> global_addr /  addr[1] -> local_addr
-    addr_buffer = decl_buffer({IntImm(DataType::Int(32), 2)}, DataType::Int(32), "addr", "local");
-    predicate_buffer =
-        decl_buffer({IntImm(DataType::Int(32), 1)}, DataType::Bool(), "predicate", "local");
+    addr_buffer = decl_buffer({IntImm::Int32(2)}, DataType::Int(32), "addr", "local");
+    predicate_buffer = decl_buffer({IntImm::Int32(1)}, DataType::Bool(), "predicate", "local");
   }
 
   bool has_buffer_1 = false, has_buffer_2 = false;

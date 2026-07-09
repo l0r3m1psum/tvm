@@ -20,6 +20,10 @@ import pytest
 
 import tvm
 import tvm.testing
+from tvm.testing import env
+
+pytest.importorskip("scipy")  # tvm.topi.testing imports scipy
+
 import tvm.topi.testing
 from tvm import relax
 from tvm.contrib.cutlass.build import is_shape_valid_for_cutlass_matmul
@@ -80,7 +84,9 @@ class Conv2dx2:
         return conv2
 
 
-pytestmark = tvm.testing.requires_cutlass.marks()
+pytestmark = [
+    pytest.mark.skipif(not env.has_cutlass(), reason="need cutlass"),
+]
 
 
 def build_and_run(mod, inputs_np, target, legalize=True, cuda_graph=False):

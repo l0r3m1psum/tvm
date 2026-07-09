@@ -19,6 +19,7 @@
 import ctypes
 
 import numpy as np
+import pytest
 
 import tvm
 import tvm.testing
@@ -27,8 +28,10 @@ from tvm.script import tirx as T
 from tvm.support import cc, popen_pool, tar, utils
 
 
-@tvm.testing.uses_gpu
+@pytest.mark.gpu
 def test_cuda_multi_lib():
+    pytest.importorskip("cloudpickle")
+
     # test combining two system lib together
     # each contains a fatbin component in cuda
     dev = tvm.cuda(0)

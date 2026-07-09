@@ -25,6 +25,7 @@
 
 #include <tvm/ffi/function.h>
 #include <tvm/ffi/reflection/registry.h>
+#include <tvm/ir/op.h>
 #include <tvm/ir/type.h>
 #include <tvm/tirx/builtin.h>
 #include <tvm/tirx/expr.h>
@@ -34,7 +35,6 @@
 #include <cmath>
 // Centralized header for constant folders.
 #include "../../arith/const_fold.h"
-#include "../../target/datatype/registry.h"
 #include "../analysis/check_contains.h"
 
 namespace tvm {
@@ -85,13 +85,13 @@ Type GetType(const PrimExpr& expr) {
     }
   }
 
+  static const Op& type_annotation_op = Op::Get("tirx.type_annotation");
   if (auto* access = expr.as<tirx::CallNode>()) {
     if (access->op.same_as(builtin::tvm_access_ptr())) {
       TVM_FFI_ICHECK(access->args.size())
           << "Builtin tvm_access_ptr() may not have empty arguments";
       auto type_annotation = Downcast<Call>(access->args[0]);
-      static auto builtin_op = Op::Get("tirx.type_annotation");
-      TVM_FFI_ICHECK(type_annotation->op.same_as(builtin_op))
+      TVM_FFI_ICHECK(type_annotation->op.same_as(type_annotation_op))
           << "Expected the first argument of builtin tvm_access_ptr() "
           << "to be a type annotation, but found " << type_annotation->op;
       return PointerType(PrimType(type_annotation->dtype));
@@ -99,8 +99,7 @@ Type GetType(const PrimExpr& expr) {
     if (access->op.same_as(builtin::ptr_byte_offset())) {
       TVM_FFI_ICHECK_EQ(access->args.size(), 3U);
       auto type_annotation = Downcast<Call>(access->args[2]);
-      static auto builtin_op = Op::Get("tirx.type_annotation");
-      TVM_FFI_ICHECK(type_annotation->op.same_as(builtin_op))
+      TVM_FFI_ICHECK(type_annotation->op.same_as(type_annotation_op))
           << "Expected the third argument of builtin ptr_byte_offset() "
           << "to be a type annotation, but found " << type_annotation->op;
       return PointerType(PrimType(type_annotation->dtype));
@@ -145,10 +144,9 @@ Type GetTypeFromRuntimeDataType(const DataType& dtype) {
 
 // LargeUIntImm
 PrimExpr LargeUIntImm(DataType t, int64_t low, int64_t high, Span span) {
-  return tirx::Call(
-      t, tirx::builtin::large_uint_imm(),
-      {make_const(DataType::UInt(32), low, span), make_const(DataType::UInt(32), high, span)}, {},
-      span);
+  return tirx::Call(t, tirx::builtin::large_uint_imm(),
+                    {IntImm(DataType::UInt(32), low, span), IntImm(DataType::UInt(32), high, span)},
+                    {}, span);
 }
 
 // Q-multiplication
@@ -211,22 +209,16 @@ void BinaryOpMatchTypes(PrimExpr& lhs, PrimExpr& rhs, Span span) {  // NOLINT(*)
     } else {
       rhs = cast(ltype, rhs);
     }
-  } else if (!ltype.is_float() &&
-             (rtype.is_float() || datatype::Registry::Global()->GetTypeRegistered(rtype.code()))) {
+  } else if (!ltype.is_float() && rtype.is_float()) {
     // Cast int->float when the other operand is a float
     lhs = cast(rtype, lhs);
-  } else if ((ltype.is_float() || datatype::Registry::Global()->GetTypeRegistered(ltype.code())) &&
-             !rtype.is_float()) {
+  } else if (ltype.is_float() && !rtype.is_float()) {
     // Cast int->float when the other operand is a float
     rhs = cast(ltype, rhs);
-  } else if (!ltype.is_bfloat16() &&
-             (rtype.is_bfloat16() ||
-              datatype::Registry::Global()->GetTypeRegistered(rtype.code()))) {
+  } else if (!ltype.is_bfloat16() && rtype.is_bfloat16()) {
     // Cast int->bfloat16 when the other operand is a bfloat16
     lhs = cast(rtype, lhs);
-  } else if ((ltype.is_bfloat16() ||
-              datatype::Registry::Global()->GetTypeRegistered(ltype.code())) &&
-             !rtype.is_bfloat16()) {
+  } else if (ltype.is_bfloat16() && !rtype.is_bfloat16()) {
     // Cast int->bfloat16 when the other operand is a bfloat16
     rhs = cast(ltype, rhs);
   } else if (!ltype.is_float8() && rtype.is_float8()) {
@@ -320,7 +312,7 @@ PrimExpr max_value(const DataType& dtype, Span span) {
     }
   } else if (dtype.is_uint()) {
     if (dtype.bits() == 64) {
-      return make_const(dtype, std::numeric_limits<uint64_t>::max(), span);
+      return MakeConst(dtype, std::numeric_limits<uint64_t>::max(), span);
     } else if (dtype.bits() < 64) {
       uint64_t val = 1;
       val = (val << static_cast<uint64_t>(dtype.bits())) - 1;
@@ -369,15 +361,7 @@ PrimExpr max_value(const DataType& dtype, Span span) {
 PrimExpr min_value(const DataType& dtype, Span span) {
   using namespace tirx;
   TVM_FFI_ICHECK_EQ(dtype.lanes(), 1);
-  if (datatype::Registry::Global()->GetTypeRegistered(dtype.code())) {
-    // TODO(tkonolige): need to convert all registered min functions to use the span.
-    auto f = datatype::GetMinFunc(dtype.code());
-    TVM_FFI_ICHECK(f) << "No minimum function registered for custom dtype "
-                      << (unsigned int)dtype.code();
-    // TODO(@hypercubestart) Document this change (and others associated with the overflowing
-    // floatimm min bug)
-    return (*f)(dtype.bits()).cast<PrimExpr>();
-  } else if (dtype.is_int()) {
+  if (dtype.is_int()) {
     if (dtype.bits() == 64) {
       return IntImm(dtype, std::numeric_limits<int64_t>::lowest(), span);
     } else if (dtype.bits() < 64) {
@@ -472,9 +456,9 @@ PrimExpr cast(const DataType& t, PrimExpr value, Span span) {
   // const fold IntImm as they are used in index computations
   if (t.is_scalar()) {
     if (const IntImmNode* op = value.as<IntImmNode>()) {
-      return make_const(t, op->value, op->span);
+      return MakeConst(t, op->value, op->span);
     } else if (const FloatImmNode* op = value.as<FloatImmNode>()) {
-      return make_const(t, op->value, op->span);
+      return MakeConst(t, op->value, op->span);
     }
     TVM_FFI_ICHECK(!value.dtype().is_handle()) << "Can't cast a handle to other types.";
     return tirx::Cast(t, value, span);
@@ -484,9 +468,9 @@ PrimExpr cast(const DataType& t, PrimExpr value, Span span) {
       // manually unroll cast
       if (value.dtype() != vtype) {
         if (const IntImmNode* op = value.as<IntImmNode>()) {
-          value = make_const(vtype, op->value, op->span);
+          value = MakeConst(vtype, op->value, op->span);
         } else if (const FloatImmNode* op = value.as<FloatImmNode>()) {
-          value = make_const(vtype, op->value, op->span);
+          value = MakeConst(vtype, op->value, op->span);
         } else {
           value = tirx::Cast(vtype, value, span);
         }
@@ -553,7 +537,7 @@ PrimExpr neg(PrimExpr a, Span span) {
   const FloatImmNode* fa = a.as<FloatImmNode>();
   if (pa) return IntImm(a.dtype(), -pa->value, span);
   if (fa) return FloatImm(a.dtype(), -fa->value, span);
-  return make_zero(a.dtype(), span) - a;
+  return MakeConst(a.dtype(), 0, span) - a;
 }
 
 PrimExpr operator-(PrimExpr a, PrimExpr b) { return sub(a, b); }
@@ -907,8 +891,8 @@ PrimExpr pow(PrimExpr x, PrimExpr y, Span span) {
     }
   }
 
-  static auto op = Op::Get("tirx.pow");
-  return tirx::Call(x.dtype(), op, {x, y}, {}, span);
+  static const Op& pow_op = Op::Get("tirx.pow");
+  return tirx::Call(x.dtype(), pow_op, {x, y}, {}, span);
 }
 
 TVM_TIR_REGISTER_PURE_BINARY_OP("pow").set_attr<TVectorizable>("TVectorizable", true);
@@ -921,15 +905,16 @@ PrimExpr abs(PrimExpr x, Span span) {
     if (px) {
       return IntImm(x.dtype(), std::abs(px->value), px->span);
     }
-    return tirx::Select(x >= make_zero(x.dtype()), x, -x, span);
+    // MakeConst can handle both vector and scalar types.
+    return tirx::Select(x >= MakeConst(x.dtype(), 0), x, -x, span);
   } else if (x.dtype().is_float() || x.dtype().is_bfloat()) {
     using tirx::FloatImmNode;
     const FloatImmNode* fx = x.as<FloatImmNode>();
     if (fx) {
       return FloatImm(x.dtype(), std::fabs(fx->value), fx->span);
     }
-    static auto op = Op::Get("tirx.fabs");
-    return tirx::Call(x.dtype(), op, {x}, {}, span);
+    static const Op& fabs_op = Op::Get("tirx.fabs");
+    return tirx::Call(x.dtype(), fabs_op, {x}, {}, span);
   } else if (x.dtype().is_uint()) {
     return x;
   } else {
@@ -945,19 +930,20 @@ TVM_TIR_REGISTER_PURE_UNARY_OP("fabs").set_attr<TVectorizable>("TVectorizable", 
 PrimExpr isnan(PrimExpr x, Span span) {
   DataType t = DataType::Bool(x.dtype().lanes());
   if (x.dtype().is_int() || x.dtype().is_uint()) {
-    return make_const(t, false);
+    return MakeConst(t, false);
   } else if (x.dtype().is_float()) {
     using tirx::FloatImmNode;
     const FloatImmNode* fx = x.as<FloatImmNode>();
     if (fx) {
-      return make_const(t, std::isnan(fx->value), fx->span);
+      return MakeConst(t, std::isnan(fx->value), fx->span);
     }
-    static auto op = Op::Get("tirx.isnan");
     if (x.dtype().bits() == 16) {
-      return tirx::Call(t, op, {cast(DataType::Float(32, t.lanes()), std::move(x), span)}, {},
+      static const Op& isnan_op = Op::Get("tirx.isnan");
+      return tirx::Call(t, isnan_op, {cast(DataType::Float(32, t.lanes()), std::move(x), span)}, {},
                         span);
     } else {
-      return tirx::Call(t, op, {x}, {}, span);
+      static const Op& isnan_op = Op::Get("tirx.isnan");
+      return tirx::Call(t, isnan_op, {x}, {}, span);
     }
   } else {
     TVM_FFI_THROW(InternalError) << "Data type " << x.dtype()
@@ -969,7 +955,7 @@ PrimExpr isnan(PrimExpr x, Span span) {
 PrimExpr isinf(PrimExpr x, Span span) {
   DataType t = DataType::Bool(x.dtype().lanes());
   if (x.dtype().is_int() || x.dtype().is_uint()) {
-    return make_const(t, false, span);
+    return MakeConst(t, false, span);
   } else if (x.dtype().is_float()) {
     PrimExpr infX = infinity(x.dtype(), span);
     return abs(x, span) == infX && !isnan(x, span);
@@ -985,27 +971,27 @@ PrimExpr isfinite(PrimExpr x, Span span) { return !isinf(x, span) && !isnan(x, s
 PrimExpr sum(PrimExpr source, ffi::Array<IterVar> rdom, ffi::Array<PrimExpr> init, Span span) {
   Var x("x", source.dtype(), span), y("y", source.dtype(), span);
   PrimExpr result = tirx::Add(x, y, span);
-  PrimExpr identity_element = make_zero(source.dtype(), span);
+  PrimExpr identity_element = MakeConst(source.dtype(), 0, span);
   tirx::CommReducer combiner = tirx::CommReducer({x}, {y}, {result}, {identity_element}, span);
-  return tirx::Reduce(combiner, {source}, rdom, make_const(DataType::Bool(), true), 0, init, span);
+  return tirx::Reduce(combiner, {source}, rdom, IntImm::Bool(true), 0, init, span);
 }
 
 PrimExpr all(PrimExpr source, ffi::Array<IterVar> rdom, ffi::Array<PrimExpr> init, Span span) {
   type_check_boolean_args(source, "tvm::all");
   Var x("x", source.dtype(), span), y("y", source.dtype());
   PrimExpr result = tirx::And(x, y, span);
-  PrimExpr identity_element = make_const(source.dtype(), true, span);
+  PrimExpr identity_element = MakeConst(source.dtype(), true, span);
   tirx::CommReducer combiner = tirx::CommReducer({x}, {y}, {result}, {identity_element}, span);
-  return tirx::Reduce(combiner, {source}, rdom, make_const(DataType::Bool(), true), 0, init, span);
+  return tirx::Reduce(combiner, {source}, rdom, IntImm::Bool(true), 0, init, span);
 }
 
 PrimExpr any(PrimExpr source, ffi::Array<IterVar> rdom, ffi::Array<PrimExpr> init, Span span) {
   type_check_boolean_args(source, "tvm::any");
   Var x("x", source.dtype(), span), y("y", source.dtype(), span);
   PrimExpr result = tirx::Or(x, y, span);
-  PrimExpr identity_element = make_const(source.dtype(), false, span);
+  PrimExpr identity_element = MakeConst(source.dtype(), false, span);
   tirx::CommReducer combiner = tirx::CommReducer({x}, {y}, {result}, {identity_element}, span);
-  return tirx::Reduce(combiner, {source}, rdom, make_const(DataType::Bool(), true), 0, init, span);
+  return tirx::Reduce(combiner, {source}, rdom, IntImm::Bool(true), 0, init, span);
 }
 
 PrimExpr max(PrimExpr source, ffi::Array<IterVar> rdom, ffi::Array<PrimExpr> init, Span span) {
@@ -1013,7 +999,7 @@ PrimExpr max(PrimExpr source, ffi::Array<IterVar> rdom, ffi::Array<PrimExpr> ini
   PrimExpr result = tirx::Max(x, y, span);
   PrimExpr identity_element = min_value(source.dtype(), span);
   tirx::CommReducer combiner = tirx::CommReducer({x}, {y}, {result}, {identity_element}, span);
-  return tirx::Reduce(combiner, {source}, rdom, make_const(DataType::Bool(), true), 0, init, span);
+  return tirx::Reduce(combiner, {source}, rdom, IntImm::Bool(true), 0, init, span);
 }
 
 PrimExpr min(PrimExpr source, ffi::Array<IterVar> rdom, ffi::Array<PrimExpr> init, Span span) {
@@ -1021,7 +1007,7 @@ PrimExpr min(PrimExpr source, ffi::Array<IterVar> rdom, ffi::Array<PrimExpr> ini
   PrimExpr result = tirx::Min(x, y, span);
   PrimExpr identity_element = max_value(source.dtype(), span);
   tirx::CommReducer combiner = tirx::CommReducer({x}, {y}, {result}, {identity_element}, span);
-  return tirx::Reduce(combiner, {source}, rdom, make_const(DataType::Bool(), true), 0, init, span);
+  return tirx::Reduce(combiner, {source}, rdom, IntImm::Bool(true), 0, init, span);
 }
 
 PrimExpr prod(PrimExpr source, ffi::Array<IterVar> rdom, ffi::Array<PrimExpr> init, Span span) {
@@ -1033,10 +1019,9 @@ PrimExpr prod(PrimExpr source, ffi::Array<IterVar> rdom, ffi::Array<PrimExpr> in
     // For non-bool types, we lower prod through Mul.
     Var x("x", source.dtype(), span), y("y", source.dtype(), span);
     PrimExpr result = tirx::Mul(x, y, span);
-    PrimExpr identity_element = make_const(source.dtype(), 1, span);
+    PrimExpr identity_element = MakeConst(source.dtype(), 1, span);
     tirx::CommReducer combiner = tirx::CommReducer({x}, {y}, {result}, {identity_element}, span);
-    return tirx::Reduce(combiner, {source}, rdom, make_const(DataType::Bool(), true), 0, init,
-                        span);
+    return tirx::Reduce(combiner, {source}, rdom, IntImm::Bool(true), 0, init, span);
   }
 }
 
@@ -1044,8 +1029,8 @@ PrimExpr prod(PrimExpr source, ffi::Array<IterVar> rdom, ffi::Array<PrimExpr> in
 PrimExpr fmod(PrimExpr x, PrimExpr y, Span span) {
   BinaryOpMatchTypes(x, y, span);
   TVM_FFI_ICHECK(x.dtype().is_float()) << "fmod only applies to float";
-  static auto op = Op::Get("tirx.fmod");
-  return tirx::Call(x.dtype(), op, {x, y}, {}, span);
+  static const Op& fmod_op = Op::Get("tirx.fmod");
+  return tirx::Call(x.dtype(), fmod_op, {x, y}, {}, span);
 }
 
 TVM_TIR_REGISTER_PURE_UNARY_OP("fmod");
@@ -1058,8 +1043,8 @@ PrimExpr floor(PrimExpr x, Span span) {
   using tirx::FloatImmNode;
   const FloatImmNode* fx = x.as<FloatImmNode>();
   if (fx) return FloatImm(x.dtype(), std::floor(fx->value), fx->span);
-  static auto op = Op::Get("tirx.floor");
-  return tirx::Call(x.dtype(), op, {x}, {}, span);
+  static const Op& floor_op = Op::Get("tirx.floor");
+  return tirx::Call(x.dtype(), floor_op, {x}, {}, span);
 }
 
 TVM_TIR_REGISTER_PURE_UNARY_OP("floor").set_attr<TVectorizable>("TVectorizable", true);
@@ -1072,8 +1057,8 @@ PrimExpr ceil(PrimExpr x, Span span) {
   using tirx::FloatImmNode;
   const FloatImmNode* fx = x.as<FloatImmNode>();
   if (fx) return FloatImm(x.dtype(), std::ceil(fx->value), fx->span);
-  static auto op = Op::Get("tirx.ceil");
-  return tirx::Call(x.dtype(), op, {x}, {}, span);
+  static const Op& ceil_op = Op::Get("tirx.ceil");
+  return tirx::Call(x.dtype(), ceil_op, {x}, {}, span);
 }
 
 TVM_TIR_REGISTER_PURE_UNARY_OP("ceil").set_attr<TVectorizable>("TVectorizable", true);
@@ -1086,8 +1071,8 @@ PrimExpr round(PrimExpr x, Span span) {
   using tirx::FloatImmNode;
   const FloatImmNode* fx = x.as<FloatImmNode>();
   if (fx) return FloatImm(x.dtype(), std::nearbyint(fx->value), fx->span);
-  static auto op = Op::Get("tirx.round");
-  return tirx::Call(x.dtype(), op, {x}, {}, span);
+  static const Op& round_op = Op::Get("tirx.round");
+  return tirx::Call(x.dtype(), round_op, {x}, {}, span);
 }
 
 TVM_TIR_REGISTER_PURE_UNARY_OP("round").set_attr<TVectorizable>("TVectorizable", true);
@@ -1100,8 +1085,8 @@ PrimExpr nearbyint(PrimExpr x, Span span) {
   using tirx::FloatImmNode;
   const FloatImmNode* fx = x.as<FloatImmNode>();
   if (fx) return FloatImm(x.dtype(), std::nearbyint(fx->value), fx->span);
-  static auto op = Op::Get("tirx.nearbyint");
-  return tirx::Call(x.dtype(), op, {x}, {}, span);
+  static const Op& nearbyint_op = Op::Get("tirx.nearbyint");
+  return tirx::Call(x.dtype(), nearbyint_op, {x}, {}, span);
 }
 
 TVM_TIR_REGISTER_PURE_UNARY_OP("nearbyint");
@@ -1117,8 +1102,8 @@ PrimExpr trunc(PrimExpr x, Span span) {
     return FloatImm(x.dtype(), (fx->value < 0 ? std::ceil(fx->value) : std::floor(fx->value)),
                     fx->span);
   }
-  static auto op = Op::Get("tirx.trunc");
-  return tirx::Call(x.dtype(), op, {x}, {}, span);
+  static const Op& trunc_op = Op::Get("tirx.trunc");
+  return tirx::Call(x.dtype(), trunc_op, {x}, {}, span);
 }
 
 TVM_TIR_REGISTER_PURE_UNARY_OP("trunc").set_attr<TVectorizable>("TVectorizable", true);
@@ -1200,9 +1185,9 @@ TVM_FFI_STATIC_INIT_BLOCK() {
       .def_packed("node._const",
                   [](ffi::PackedArgs args, ffi::Any* ret) {
                     if (auto opt = args[0].try_cast<int64_t>()) {
-                      *ret = tirx::make_const(args[1].cast<DataType>(), *opt, args[2].cast<Span>());
+                      *ret = tirx::MakeConst(args[1].cast<DataType>(), *opt, args[2].cast<Span>());
                     } else if (auto opt = args[0].try_cast<double>()) {
-                      *ret = tirx::make_const(args[1].cast<DataType>(), *opt, args[2].cast<Span>());
+                      *ret = tirx::MakeConst(args[1].cast<DataType>(), *opt, args[2].cast<Span>());
                     } else {
                       TVM_FFI_THROW(InternalError)
                           << "First argument to tvm.tirx.const must be int, float, or bool, "
@@ -1252,7 +1237,6 @@ TVM_FFI_STATIC_INIT_BLOCK() {
            [](PrimExpr cond, PrimExpr true_value, PrimExpr false_value, Span span) {
              return if_then_else(cond, true_value, false_value, span);
            })
-      .def("tirx.const_true", [](DataType t, Span span) { return const_true(t.lanes(), span); })
       .DEF_MAKE_BINARY_OP(_OpAdd, add)
       .DEF_MAKE_BINARY_OP(_OpSub, sub)
       .DEF_MAKE_BINARY_OP(_OpMul, mul)
@@ -1285,24 +1269,24 @@ TVM_FFI_STATIC_INIT_BLOCK() {
 }
 
 PrimExpr fast_erf_float_expr(PrimExpr arg, int bits) {
-  auto plus_4 = make_const(DataType::Float(bits), 4.f);
-  auto minus_4 = make_const(DataType::Float(bits), -4.f);
+  auto plus_4 = FloatImm(DataType::Float(bits), 4.f);
+  auto minus_4 = FloatImm(DataType::Float(bits), -4.f);
 
   // The monomial coefficients of the numerator polynomial (odd).
-  auto alpha_1 = make_const(DataType::Float(bits), -1.60960333262415e-02f);
-  auto alpha_3 = make_const(DataType::Float(bits), -2.95459980854025e-03f);
-  auto alpha_5 = make_const(DataType::Float(bits), -7.34990630326855e-04f);
-  auto alpha_7 = make_const(DataType::Float(bits), -5.69250639462346e-05f);
-  auto alpha_9 = make_const(DataType::Float(bits), -2.10102402082508e-06f);
-  auto alpha_11 = make_const(DataType::Float(bits), 2.77068142495902e-08f);
-  auto alpha_13 = make_const(DataType::Float(bits), -2.72614225801306e-10f);
+  auto alpha_1 = FloatImm(DataType::Float(bits), -1.60960333262415e-02f);
+  auto alpha_3 = FloatImm(DataType::Float(bits), -2.95459980854025e-03f);
+  auto alpha_5 = FloatImm(DataType::Float(bits), -7.34990630326855e-04f);
+  auto alpha_7 = FloatImm(DataType::Float(bits), -5.69250639462346e-05f);
+  auto alpha_9 = FloatImm(DataType::Float(bits), -2.10102402082508e-06f);
+  auto alpha_11 = FloatImm(DataType::Float(bits), 2.77068142495902e-08f);
+  auto alpha_13 = FloatImm(DataType::Float(bits), -2.72614225801306e-10f);
 
   // The monomial coefficients of the denominator polynomial (even).
-  auto beta_0 = make_const(DataType::Float(bits), -1.42647390514189e-02f);
-  auto beta_2 = make_const(DataType::Float(bits), -7.37332916720468e-03f);
-  auto beta_4 = make_const(DataType::Float(bits), -1.68282697438203e-03f);
-  auto beta_6 = make_const(DataType::Float(bits), -2.13374055278905e-04f);
-  auto beta_8 = make_const(DataType::Float(bits), -1.45660718464996e-05f);
+  auto beta_0 = FloatImm(DataType::Float(bits), -1.42647390514189e-02f);
+  auto beta_2 = FloatImm(DataType::Float(bits), -7.37332916720468e-03f);
+  auto beta_4 = FloatImm(DataType::Float(bits), -1.68282697438203e-03f);
+  auto beta_6 = FloatImm(DataType::Float(bits), -2.13374055278905e-04f);
+  auto beta_8 = FloatImm(DataType::Float(bits), -1.45660718464996e-05f);
 
   // clamp x
   auto x = tvm::max(tvm::min(arg, plus_4), minus_4);
@@ -1361,9 +1345,9 @@ PrimExpr PrintOpPacked(Var data, DataType dtype, bool is_string, bool is_scalar,
   ffi::Array<PrimExpr> args;
   args.push_back(data);
   args.push_back(tirx::StringImm(ffi::DLDataTypeToString(dtype)));
-  args.push_back(make_const(DataType::Bool(), is_string));
-  args.push_back(make_const(DataType::Bool(), is_scalar));
-  args.push_back(make_const(DataType::UInt(32), dim_num));
+  args.push_back(IntImm::Bool(is_string));
+  args.push_back(IntImm::Bool(is_scalar));
+  args.push_back(IntImm(DataType::UInt(32), dim_num));
   for (const auto& dim : shape) {
     args.push_back(dim);
   }
