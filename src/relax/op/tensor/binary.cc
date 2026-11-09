@@ -158,14 +158,23 @@ InferLayoutOutput InferLayoutBinaryEwise(const Call& call,
   Optional<ShapeExpr> shape1 = GetRef<ShapeExpr>(x1_sinfo->shape.as<ShapeExprNode>());
   Optional<ShapeExpr> shape2 = GetRef<ShapeExpr>(x2_sinfo->shape.as<ShapeExprNode>());
   // Lets handle sub indexing as long as primal dims are matching
-  if (layout1->layout.ndim_primal() == layout2->layout.ndim_primal()) {
-    if ((layout1->layout.ndim() >= layout2->layout.ndim()) && shape2.defined()) {
-      if (CanProveLayoutTransform(layout2->layout, layout1->layout, shape2.value()->values)) {
-        return InferLayoutOutput({layout1, layout1}, {layout1}, Attrs(call->attrs));
-      }
-    } else if (shape1.defined()) {
-      if (CanProveLayoutTransform(layout1->layout, layout2->layout, shape1.value()->values)) {
-        return InferLayoutOutput({layout2, layout2}, {layout2}, Attrs(call->attrs));
+  // Backported from apache/tvm#17599 (v0.23): the shapes are the ones of the
+  // original (initial layout) tensors, checking the transformation from the
+  // layout of the other operand failed when both operands were already in the
+  // same sub-indexed layout (e.g. NCHW1n16c), falling back to FollowDecision.
+  if ((layout1->layout.ndim() != layout1->layout.ndim_primal()) ||
+      (layout2->layout.ndim() != layout2->layout.ndim_primal())) {
+    if (layout1->layout.ndim_primal() == layout2->layout.ndim_primal()) {
+      if ((layout1->layout.ndim() >= layout2->layout.ndim()) && shape2.defined()) {
+        if (CanProveLayoutTransform(InitialLayout(shape2.value()->values.size()), layout1->layout,
+                                    shape2.value()->values)) {
+          return InferLayoutOutput({layout1, layout1}, {layout1}, Attrs(call->attrs));
+        }
+      } else if (shape1.defined()) {
+        if (CanProveLayoutTransform(InitialLayout(shape1.value()->values.size()), layout2->layout,
+                                    shape1.value()->values)) {
+          return InferLayoutOutput({layout2, layout2}, {layout2}, Attrs(call->attrs));
+        }
       }
     }
   }
